@@ -1,0 +1,31 @@
+# openenv.yaml
+name: credless-env
+version: "1.0.0"
+description: >
+  AI Credit Analyst — an RL environment where agents evaluate loan applicants
+  using behavioural financial data (no traditional credit history required).
+  Powered by CredLess, an explainable alternative credit scoring model.
+  Three tasks of increasing difficulty: binary approval, risk tiering with
+  credit limit estimation, and adaptive field inquiry.
+author: your-hf-username
+license: MIT
+tags:
+  - finance
+  - credit-scoring
+  - financial-inclusion
+  - explainable-ai
+  - openenv
+tasks:
+  - name: binary_decision
+    difficulty: easy
+    description: Full applicant profile shown. Approve or deny.
+  - name: risk_tiering
+    difficulty: medium
+    description: Assign risk tier and suggest credit limit in INR.
+  - name: adaptive_inquiry
+    difficulty: hard
+    description: Partial profile; request fields strategically before deciding.
+server:
+  port: 7860
+  workers: 2
+  max_concurrent_envs: 50

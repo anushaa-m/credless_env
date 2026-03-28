@@ -1,0 +1,36 @@
+# ── Python ─────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+
+# ── Virtual environment ───────────────
+venv/
+.env/
+.envrc
+
+# ── OS files ─────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── VSCode / IDE ─────────────────────
+.vscode/
+.idea/
+
+# ── Logs ─────────────────────────────
+*.log
+
+# ── Data files (optional, if large) ──
+*.csv
+*.pkl
+*.joblib
+
+# ── Model artifacts ───────────────────
+credless_model/model.pkl
+
+# ── OpenEnv clone (IMPORTANT) ────────
+OpenEnv/
+
+# ── Cache ───────────────────────────
+.cache/
