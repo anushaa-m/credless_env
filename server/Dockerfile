@@ -1,43 +1,31 @@
-# server/Dockerfile
 FROM ghcr.io/meta-pytorch/openenv-base:latest
 
 WORKDIR /app
 
-# ── Install dependencies ──────────────────────────────────────────────────────
-COPY server/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
-    rm /tmp/requirements.txt
+# ✅ INSTALL SYSTEM DEPS FIRST (git + curl)
+RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
 
-# ── Copy all source code ──────────────────────────────────────────────────────
+# Install Python deps
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+
+# Copy project
 COPY . /app
 
-# ── Pre-build: train and save the CredLess model ─────────────────────────────
+# Train model
 RUN python credless_model/train.py
 
-# ── Runtime config ────────────────────────────────────────────────────────────
-ENV PORT=7860
+# Runtime config
+ENV PORT=8000
 ENV HOST=0.0.0.0
 ENV WORKERS=2
 ENV PYTHONPATH=/app
 
-EXPOSE 7860
+EXPOSE 8000
 
+# Healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-CMD ["sh", "-c", \
-     "uvicorn server.app:app --host $HOST --port $PORT --workers $WORKERS"]
-```
-
-And the `server/requirements.txt` you need alongside it:
-```
-# server/requirements.txt
-fastapi
-uvicorn[standard]
-pydantic>=2.0
-scikit-learn
-joblib
-numpy
-openai
-requests
-git+https://github.com/meta-pytorch/OpenEnv.git
+# Start server
+CMD ["sh", "-c", "uvicorn server.app:app --host $HOST --port $PORT --workers $WORKERS"]
