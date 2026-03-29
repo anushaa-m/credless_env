@@ -2,10 +2,10 @@ FROM ghcr.io/meta-pytorch/openenv-base:latest
 
 WORKDIR /app
 
-# ✅ INSTALL SYSTEM DEPS FIRST (git + curl)
+# System deps
 RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps
+# Python deps
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
@@ -15,13 +15,13 @@ COPY . /app
 # Train model
 RUN python credless_model/train.py
 
-# Runtime config
-ENV PORT=8000
+# Runtime config (IMPORTANT CHANGE)
+ENV PORT=7860
 ENV HOST=0.0.0.0
 ENV WORKERS=2
 ENV PYTHONPATH=/app
 
-EXPOSE 8000
+EXPOSE 7860
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
