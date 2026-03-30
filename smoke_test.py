@@ -1,7 +1,7 @@
 # smoke_test.py
 import requests
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:7860"
 
 def safe_json(r, label=""):
     if r.status_code != 200:

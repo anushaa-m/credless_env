@@ -29,3 +29,14 @@ Thumbs.db
 
 # Cache
 .cache/
+# .dockerignore
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.env
+*.egg-info/
+dist/
+build/
+.pytest_cache/

@@ -6,6 +6,9 @@ import json
 import argparse
 import requests
 from openai import OpenAI
+import time
+from dotenv import load_dotenv
+load_dotenv()   # ✅ loads .env file for local dev
 
 BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 MODEL    = os.getenv("BASELINE_MODEL", "gpt-4o-mini")
@@ -56,21 +59,25 @@ def _call_llm(obs: dict) -> dict:
     return json.loads(resp.choices[0].message.content)
 
 
-def run_episode(task_name: str) -> float:
-    """Run one full episode and return the final episode_score."""
-    # reset
-    r   = requests.post(f"{BASE_URL}/reset", json={"task_name": task_name}, timeout=30)
-    obs = r.json().get("observation", r.json())
-
-    for _ in range(12):
-        if obs.get("done"):
-            break
-        action = _call_llm(obs)
-        r      = requests.post(f"{BASE_URL}/step", json=action, timeout=30)
-        obs    = r.json().get("observation", r.json())
-
-    return float(obs.get("episode_score", 0.0))
-
+def run_episode(task: str, retries: int = 2) -> float:
+    for attempt in range(retries + 1):
+        try:
+            r   = requests.post(f"{BASE_URL}/reset",
+                                json={"task_name": task}, timeout=30)
+            obs = r.json().get("observation", r.json())
+            for _ in range(12):
+                if obs.get("done"):
+                    break
+                action = _llm(obs)
+                r      = requests.post(f"{BASE_URL}/step",
+                                       json=action, timeout=30)
+                obs    = r.json().get("observation", r.json())
+            return float(obs.get("episode_score", 0.0))
+        except Exception as e:
+            if attempt == retries:
+                return 0.0
+            time.sleep(2)  # wait before retry
+    return 0.0
 
 def main(output_json: bool = False):
     tasks   = ["binary_decision", "risk_tiering", "adaptive_inquiry"]
