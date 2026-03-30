@@ -1,11 +1,10 @@
 # server/environment.py
+from openenv.core.env_server.interfaces import Environment   # ✅ correct path
+from models import CreditAction, CreditObservation, CreditState
+from .oracle import CredLessOracle
 import uuid
 from typing import Optional
 
-from openenv.core.env_server import Environment
-
-from models import CreditAction, CreditObservation, CreditState
-from server.oracle import CredLessOracle
 from server.data_generator import (
     generate_applicant, FIELD_RANGES,
     ALWAYS_VISIBLE, HIDDEN_INITIALLY,
@@ -204,13 +203,14 @@ class CreditAnalystEnvironment(Environment):
     # ── state property ────────────────────────────────────────────────────────
     @property
     def state(self) -> CreditState:
+    # ✅ returns Pydantic model, .dict() works
         return CreditState(
-            episode_id            = self._episode_id,
-            task_name             = self._task,
-            step_count            = self._steps,
-            cumulative_reward     = self._cum_reward,
-            fields_requested      = list(self._requests),
-            ground_truth_tier     = self._ground_truth.get("tier", ""),
-            ground_truth_decision = self._ground_truth.get("decision", ""),
-            ground_truth_prob     = self._ground_truth.get("default_prob", 0.0),
-        )
+        episode_id            = self._episode_id,
+        task_name             = self._task,
+        step_count            = self._steps,
+        cumulative_reward     = round(self._cum_reward, 4),
+        fields_requested      = list(self._requests),
+        ground_truth_tier     = self._ground_truth.get("tier", ""),
+        ground_truth_decision = self._ground_truth.get("decision", ""),
+        ground_truth_prob     = self._ground_truth.get("default_prob", 0.0),
+    )

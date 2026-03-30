@@ -34,3 +34,9 @@ OpenEnv/
 
 # ── Cache ───────────────────────────
 .cache/
+.env
+venv/
+__pycache__/
+*.pyc
+credless_model/model.pkl
+*.egg-info/
