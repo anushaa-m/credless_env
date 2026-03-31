@@ -57,9 +57,11 @@ def step(action: CreditAction):
     }
 
 
+# server/app.py — state endpoint (remove .state, call .state())
+
 @app.get("/state")
 def state():
-    return env.state.dict()    # ✅ .dict() now works since CreditState is Pydantic
+    return env.state().dict()    # ✅ call as method, not property
 
 
 @app.get("/tasks")
@@ -101,3 +103,15 @@ def run_baseline():
     except Exception as exc:
         scores = {"error": str(exc)}
     return JSONResponse(content=scores)
+def main():
+    import uvicorn
+    import os
+    uvicorn.run(
+        "server.app:app",
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", 7860)),
+        workers=int(os.getenv("WORKERS", 2))
+    )
+
+if __name__ == "__main__":
+    main()
