@@ -94,15 +94,15 @@ def train():
 
     # Pipeline: scale → logistic regression (matches CredLess original)
     model = Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf",    LogisticRegression(
-            C=1.0,
-            max_iter=500,
-            random_state=RANDOM_SEED,
-            solver="lbfgs",
-        )),
-    ])
-
+    ("scaler", StandardScaler()),
+    ("clf",    LogisticRegression(
+        C=1.0,
+        max_iter=500,
+        random_state=RANDOM_SEED,
+        solver="lbfgs",
+        n_jobs=-1,
+    )),
+])
     # Cross-validation
     cv_scores = cross_val_score(model, X, y, cv=5, scoring="roc_auc")
     print(f"  CV AUC: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")

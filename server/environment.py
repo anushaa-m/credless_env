@@ -203,7 +203,6 @@ class CreditAnalystEnvironment(Environment):
     # ── state property ────────────────────────────────────────────────────────
     @property
     def state(self) -> CreditState:
-    # ✅ returns Pydantic model, .dict() works
         return CreditState(
         episode_id            = self._episode_id,
         task_name             = self._task,
