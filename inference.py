@@ -1,170 +1,175 @@
-# inference.py  ← MUST be named exactly this, at project root
 """
-OpenEnv Hackathon — required inference script.
-Uses OpenAI client pointed at HF router.
+OpenEnv hackathon inference script.
 
-Required env vars:
-    API_BASE_URL  — e.g. https://router.huggingface.co/v1
-    MODEL_NAME    — e.g. meta-llama/Llama-3.1-8B-Instruct
-    HF_TOKEN      — your Hugging Face access token
-    ENV_BASE_URL  — running environment URL (default http://localhost:7860)
+Required environment variables:
+    API_BASE_URL   The API endpoint for the LLM.
+    MODEL_NAME     The model identifier to use for inference.
+    HF_TOKEN       Your Hugging Face / API key.
+
+Defaults are set only for API_BASE_URL and MODEL_NAME.
+The script must remain named `inference.py` at the project root and must use
+the OpenAI client for all LLM calls.
 """
-import os
 import json
-import time
-import argparse
+import os
+from typing import List, Optional
+
+import requests
 from dotenv import load_dotenv
 from openai import OpenAI
-import requests
 
 load_dotenv()
 
-# ── Required env vars ──────────────────────────────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/Llama-3.1-8B-Instruct")
-HF_TOKEN     = os.environ["HF_TOKEN"]          # hard fail if missing
-ENV_BASE_URL = os.getenv("ENV_BASE_URL",  "http://localhost:7860")
-RUNS         = int(os.getenv("INFERENCE_RUNS", "5"))
+MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+HF_TOKEN = os.environ["HF_TOKEN"]
+ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
+TASK_NAME = os.getenv("CREDLESS_TASK", "binary_decision")
+BENCHMARK = os.getenv("CREDLESS_BENCHMARK", "credless-env")
+MAX_STEPS = 12
 
-# ── OpenAI client pointed at HF router ────────────────────────────────────────
-client = OpenAI(
-    base_url=API_BASE_URL,
-    api_key=HF_TOKEN,
-)
+client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
 SYSTEM_PROMPT = (
     "You are a professional credit analyst AI. "
-    "Evaluate loan applicants using behavioural financial data. "
-    "Return ONLY a single valid JSON action object — no explanation, no markdown."
+    "Return exactly one valid JSON action object and nothing else."
 )
 
 TASK_HINTS = {
     "binary_decision": (
-        'Return exactly one of:\n'
-        '  {"action_type":"approve","decision":"approve"}\n'
-        '  {"action_type":"deny","decision":"deny"}'
+        'Return exactly one of: '
+        '{"action_type":"approve","decision":"approve"} '
+        'or {"action_type":"deny","decision":"deny"}.'
     ),
     "risk_tiering": (
-        'Return exactly:\n'
-        '  {"action_type":"assign_tier",'
-        '"tier":"low_risk|medium_risk|high_risk",'
-        '"credit_limit":<float in INR>}'
+        'Return exactly: '
+        '{"action_type":"assign_tier","tier":"low_risk|medium_risk|high_risk","credit_limit":<float>}.'
     ),
     "adaptive_inquiry": (
-        'You may first request hidden fields (up to 3 free):\n'
-        '  {"action_type":"request_field","field_name":"<name>"}\n'
-        'Then make final decision:\n'
-        '  {"action_type":"approve","decision":"approve|deny"}'
+        'If more information is needed, return '
+        '{"action_type":"request_field","field_name":"<name>"}. '
+        'Otherwise return '
+        '{"action_type":"approve","decision":"approve"} '
+        'or {"action_type":"deny","decision":"deny"}.'
     ),
 }
 
 
-def _call_model(obs: dict) -> dict:
-    """Call the LLM and parse JSON action."""
-    task = obs.get("task_name", "binary_decision")
-    user = (
-        f"Task: {task}\n\n"
-        f"Applicant profile:\n{json.dumps(obs.get('revealed_fields', {}), indent=2)}\n\n"
-        f"Hidden fields available: {obs.get('hidden_fields', [])}\n\n"
-        f"Environment message: {obs.get('message', '')}\n\n"
-        f"Required format:\n{TASK_HINTS.get(task, '')}\n\n"
-        "Your JSON action:"
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} "
+        f"done={str(done).lower()} error={error_val}",
+        flush=True,
     )
+
+
+def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{reward:.2f}" for reward in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}",
+        flush=True,
+    )
+
+
+def sanitize_log_value(value: str) -> str:
+    return " ".join(str(value).split())
+
+
+def format_action(action: dict) -> str:
+    return sanitize_log_value(json.dumps(action, separators=(",", ":"), sort_keys=False))
+
+
+def call_model(observation: dict) -> dict:
+    task_name = observation.get("task_name", TASK_NAME)
+    user_prompt = (
+        f"Task: {task_name}\n"
+        f"Revealed fields: {json.dumps(observation.get('revealed_fields', {}), sort_keys=True)}\n"
+        f"Hidden fields: {json.dumps(observation.get('hidden_fields', []))}\n"
+        f"Message: {observation.get('message', '')}\n"
+        f"Instruction: {TASK_HINTS.get(task_name, '')}"
+    )
+
     try:
-        resp = client.chat.completions.create(
+        completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user},
+                {"role": "user", "content": user_prompt},
             ],
-            max_tokens=128,
             temperature=0.0,
+            max_tokens=128,
+            stream=False,
         )
-        raw = resp.choices[0].message.content.strip()
-        # Strip markdown fences if model adds them
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        return json.loads(raw.strip())
-    except json.JSONDecodeError:
-        # Fallback safe action
-        return {"action_type": "deny", "decision": "deny"}
+        content = (completion.choices[0].message.content or "").strip()
+        if content.startswith("```"):
+            parts = content.split("```")
+            content = parts[1] if len(parts) > 1 else content
+            if content.startswith("json"):
+                content = content[4:]
+        return json.loads(content.strip())
     except Exception:
         return {"action_type": "deny", "decision": "deny"}
 
 
-def run_episode(task_name: str, retries: int = 2) -> float:
-    """Run one full episode and return final episode_score."""
-    for attempt in range(retries + 1):
-        try:
-            # Reset
-            r   = requests.post(
-                f"{ENV_BASE_URL}/reset",
-                json={"task_name": task_name},
-                timeout=30,
-            )
-            r.raise_for_status()
-            obs = r.json().get("observation", r.json())
+def main() -> None:
+    rewards: List[float] = []
+    steps_taken = 0
+    success = False
 
-            # Episode loop
-            for _ in range(12):
-                if obs.get("done"):
-                    break
-                action = _call_model(obs)
-                r      = requests.post(
+    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+
+    try:
+        reset_response = requests.post(
+            f"{ENV_BASE_URL}/reset",
+            json={"task_name": TASK_NAME},
+            timeout=30,
+        )
+        reset_response.raise_for_status()
+        result = reset_response.json()
+        observation = result.get("observation", result)
+        done = bool(result.get("done", observation.get("done", False)))
+
+        for step in range(1, MAX_STEPS + 1):
+            if done:
+                break
+
+            action = call_model(observation)
+            action_str = format_action(action)
+            error: Optional[str] = None
+
+            try:
+                step_response = requests.post(
                     f"{ENV_BASE_URL}/step",
                     json=action,
                     timeout=30,
                 )
-                r.raise_for_status()
-                obs = r.json().get("observation", r.json())
+                step_response.raise_for_status()
+                result = step_response.json()
+                observation = result.get("observation", result)
+                reward = float(result.get("reward", observation.get("step_reward", 0.0)) or 0.0)
+                done = bool(result.get("done", observation.get("done", False)))
+                success = done and float(observation.get("episode_score", 0.0)) > 0.0
+            except Exception as exc:
+                reward = 0.0
+                done = True
+                error = sanitize_log_value(str(exc))
+                success = False
 
-            return float(obs.get("episode_score", 0.0))
+            rewards.append(reward)
+            steps_taken = step
+            log_step(step=step, action=action_str, reward=reward, done=done, error=error)
 
-        except Exception as e:
-            if attempt == retries:
-                return 0.0
-            time.sleep(2 ** attempt)   # exponential backoff
+            if done:
+                break
 
-    return 0.0
-
-
-def main(output_json: bool = False) -> dict:
-    tasks   = ["binary_decision", "risk_tiering", "adaptive_inquiry"]
-    results = {}
-
-    for task in tasks:
-        scores = []
-        for i in range(RUNS):
-            score = run_episode(task)
-            scores.append(round(score, 4))
-            if not output_json:
-                bar = "█" * int(score * 20)
-                print(f"  [{i+1}/{RUNS}] {task:25s} [{bar:<20}] {score:.3f}")
-
-        mean = round(sum(scores) / len(scores), 4)
-        results[task] = {
-            "mean_score": mean,
-            "scores":     scores,
-            "runs":       RUNS,
-            "model":      MODEL_NAME,
-        }
-
-    if output_json:
-        print(json.dumps(results, indent=2))
-    else:
-        print("\n=== CredLess-Env Inference Results ===")
-        for task, r in results.items():
-            bar = "█" * int(r["mean_score"] * 20)
-            print(f"  {task:25s} [{bar:<20}] mean={r['mean_score']:.3f}")
-
-    return results
+    finally:
+        log_end(success=success, steps=steps_taken, rewards=rewards)
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="CredLess-Env inference script")
-    p.add_argument("--output-json", action="store_true",
-                   help="Print JSON to stdout (used by /baseline endpoint)")
-    args = p.parse_args()
-    main(args.output_json)
+    main()
