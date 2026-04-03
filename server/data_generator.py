@@ -12,7 +12,7 @@ import uuid
 import numpy as np
 from typing import Dict, Optional
 
-# Feature name → (min, max) for uniform sampling
+# Feature name -> (min, max) for uniform sampling
 FIELD_RANGES: Dict[str, tuple] = {
     "transaction_activity":  (0.0,  1.0),   # normalised tx count score
     "payment_consistency":   (0.0,  1.0),   # on-time payment ratio

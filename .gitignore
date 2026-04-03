@@ -25,6 +25,7 @@ Thumbs.db
 *.csv
 *.pkl
 *.joblib
+data/cd_updated.csv
 
 # ── Model artifacts ───────────────────
 credless_model/model.pkl
