@@ -19,6 +19,9 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
+# Copy dataset directory explicitly so training can find it in Docker
+COPY data/ /app/env/data/
+
 # Copy all project files
 COPY . /app/env
 

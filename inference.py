@@ -24,7 +24,7 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 HF_TOKEN = os.environ["HF_TOKEN"]
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
-TASK_NAME = os.getenv("CREDLESS_TASK", "binary_decision")
+TASK_NAME = os.getenv("CREDLESS_TASK", "binary_decision")   
 BENCHMARK = os.getenv("CREDLESS_BENCHMARK", "credless-env")
 MAX_STEPS = 12
 
