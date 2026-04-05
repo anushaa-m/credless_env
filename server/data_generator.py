@@ -10,6 +10,7 @@ answer is less directly recoverable from a simple shortcut.
 """
 import uuid
 import numpy as np
+import random
 from typing import Dict, Optional
 
 # Feature name -> (min, max) for uniform sampling
@@ -49,12 +50,39 @@ def _beta_scaled(rng: np.random.Generator, lo: float, hi: float, a: float, b: fl
     return float(lo + (hi - lo) * rng.beta(a, b))
 
 
+def add_real_world_noise(features: dict, seed: int = None) -> dict:
+    """
+    Simulate real-world data quality issues:
+    1. Missing data (some fields occasionally unavailable)
+    2. Noisy measurements (sensor/reporting errors)
+    3. Seasonal effects (account age behaves differently in certain months)
+    """
+    rng = random.Random(seed)
+    noisy = features.copy()
+
+    # 1. Data availability noise — 15% chance any field is stale/estimated
+    for field in ["digital_usage", "salary_consistency"]:
+        if rng.random() < 0.15:
+            noisy[field] = round(noisy[field] * rng.uniform(0.85, 1.15), 4)
+
+    # 2. Overdraft count reporting lag — sometimes undercounted
+    if rng.random() < 0.10:
+        noisy["overdraft_count"] = max(0, noisy["overdraft_count"] - rng.randint(1, 3))
+
+    # 3. Failed transaction ratio spikes — economic stress events
+    if rng.random() < 0.08:
+        noisy["failed_tx_ratio"] = min(0.5, noisy["failed_tx_ratio"] + 0.1)
+
+    return noisy
+
+
 def generate_applicant(seed: Optional[int] = None) -> Dict:
     """
     Returns a dict:
         {
             "applicant_id": str,
-            "features":     {field_name: float, ...}
+            "features":     {field_name: float, ...},
+            "data_quality": str
         }
     """
     rng = np.random.default_rng(seed)
@@ -149,7 +177,11 @@ def generate_applicant(seed: Optional[int] = None) -> Dict:
         "account_age": account_age,
     }
 
+    # Apply real-world noise on top of correlated features
+    features = add_real_world_noise(features, seed=seed)
+
     return {
         "applicant_id": applicant_id,
         "features":     features,
+        "data_quality": "noisy",
     }

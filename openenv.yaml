@@ -5,7 +5,7 @@ description: >
   AI Credit Analyst — RL environment where agents evaluate loan applicants
   using behavioural financial data. Three tasks: binary approval (easy),
   risk tiering (medium), adaptive field inquiry (hard).
-author: your-hf-username
+author: anushaa-m
 license: MIT
 tags:
   - finance

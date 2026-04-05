@@ -41,3 +41,4 @@ class CreditState(BaseModel):
     ground_truth_tier:     str       = Field("")
     ground_truth_decision: str       = Field("")
     ground_truth_prob:     float     = Field(0.0)
+    trajectory_length:     int       = Field(0)

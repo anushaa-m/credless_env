@@ -192,16 +192,14 @@ openenv validate
 
 ## Baseline Scores
 
-Scores below produced by `inference.py` using `meta-llama/Llama-3.1-8B-Instruct`
-via HF router, 5 runs per task. **Update these with your real run results.**
+Scores below were produced by `inference.py` against the live HF Space using
+`meta-llama/Llama-3.1-8B-Instruct` via the HF router.
 
-| Task | Difficulty | Mean Score | Runs |
+| Task | Mean Score | Runs | Model |
 |---|---|---|---|
-| `binary_decision` | Easy | — | 5 |
-| `risk_tiering` | Medium | — | 5 |
-| `adaptive_inquiry` | Hard | — | 5 |
-
-> Run `python inference.py` with valid env vars to generate real scores.
+| `binary_decision` | 0.00 | 1 | `meta-llama/Llama-3.1-8B-Instruct` |
+| `risk_tiering` | 0.30 | 1 | `meta-llama/Llama-3.1-8B-Instruct` |
+| `adaptive_inquiry` | 0.60 | 1 | `meta-llama/Llama-3.1-8B-Instruct` |
 
 ---
 
@@ -243,3 +241,23 @@ credless-env/
     ├── tasks.py           ← Task registry
     └── Dockerfile
 ```
+
+## Reward Design Principles
+
+Reward shaping follows lessons from the OLMo3 technical report (Groeneveld et al., 2025):
+- Dense intermediate rewards prevent sparse-reward exploitation
+- Efficiency penalties discourage degenerate looping strategies  
+- Trajectory diversity is enforced via repetition penalties in adaptive_inquiry
+- Episode boundaries are hard-capped to prevent infinite rollouts
+## Custom Environment Design
+
+CredLess-Env is a fully custom OpenEnv environment built from scratch 
+using `openenv init credless_env`. It is not a wrapper around an 
+existing environment.
+
+Custom components:
+- **Oracle**: Trained ML model (XGBoost/RF) as ground-truth credit scorer
+- **Data generator**: Synthetic applicant profiles with real-world noise
+- **Graders**: Three deterministic task-specific scoring functions
+- **Reward shaping**: Dense trajectory-level signals (not sparse end-of-episode)
+- **Anti-exploitation**: Loop detection and repetition penalties

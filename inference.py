@@ -24,7 +24,8 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 HF_TOKEN = os.environ["HF_TOKEN"]
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
-TASK_NAME = os.getenv("CREDLESS_TASK", "binary_decision")   
+TASKS = ["binary_decision", "risk_tiering", "adaptive_inquiry"]
+TASK_NAME = os.getenv("CREDLESS_TASK")
 BENCHMARK = os.getenv("CREDLESS_BENCHMARK", "credless-env")
 MAX_STEPS = 12
 
@@ -68,10 +69,12 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     )
 
 
-def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+# Replace log_end function:
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{reward:.2f}" for reward in rewards)
     print(
-        f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} "
+        f"score={score:.2f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -84,8 +87,17 @@ def format_action(action: dict) -> str:
     return sanitize_log_value(json.dumps(action, separators=(",", ":"), sort_keys=False))
 
 
-def call_model(observation: dict) -> dict:
-    task_name = observation.get("task_name", TASK_NAME)
+def fallback_action(task_name: str) -> dict:
+    if task_name == "risk_tiering":
+        return {
+            "action_type": "assign_tier",
+            "tier": "medium_risk",
+            "credit_limit": 50000.0,
+        }
+    return {"action_type": "deny", "decision": "deny"}
+
+
+def call_model(observation: dict, task_name: str) -> dict:
     user_prompt = (
         f"Task: {task_name}\n"
         f"Revealed fields: {json.dumps(observation.get('revealed_fields', {}), sort_keys=True)}\n"
@@ -113,20 +125,21 @@ def call_model(observation: dict) -> dict:
                 content = content[4:]
         return json.loads(content.strip())
     except Exception:
-        return {"action_type": "deny", "decision": "deny"}
+        return fallback_action(task_name)
 
 
-def main() -> None:
+def run_task(task_name: str) -> float:
     rewards: List[float] = []
     steps_taken = 0
     success = False
+    observation = {}
 
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+    log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
     try:
         reset_response = requests.post(
             f"{ENV_BASE_URL}/reset",
-            json={"task_name": TASK_NAME},
+            json={"task_name": task_name},
             timeout=30,
         )
         reset_response.raise_for_status()
@@ -138,7 +151,7 @@ def main() -> None:
             if done:
                 break
 
-            action = call_model(observation)
+            action = call_model(observation, task_name)
             action_str = format_action(action)
             error: Optional[str] = None
 
@@ -168,8 +181,17 @@ def main() -> None:
                 break
 
     finally:
-        log_end(success=success, steps=steps_taken, rewards=rewards)
+        final_score = float(observation.get("episode_score", 0.0)) if observation else 0.0
+        success = final_score > 0.0
+        log_end(success=success, steps=steps_taken,
+                score=final_score, rewards=rewards)
+    return final_score
 
+
+def main() -> None:
+    tasks = [TASK_NAME] if TASK_NAME else TASKS
+    for task_name in tasks:
+        run_task(task_name)
 
 if __name__ == "__main__":
     main()
