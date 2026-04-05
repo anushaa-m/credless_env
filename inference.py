@@ -87,6 +87,83 @@ def format_action(action: dict) -> str:
     return sanitize_log_value(json.dumps(action, separators=(",", ":"), sort_keys=False))
 
 
+def estimate_default_prob(features: dict) -> float:
+    transaction_activity = float(features.get("transaction_activity", 0.5))
+    payment_consistency = float(features.get("payment_consistency", 0.5))
+    account_stability = float(features.get("account_stability", 0.5))
+    overdraft_count = float(features.get("overdraft_count", 10.0))
+    digital_usage = float(features.get("digital_usage", 0.5))
+    salary_consistency = float(features.get("salary_consistency", 0.5))
+    failed_tx_ratio = float(features.get("failed_tx_ratio", 0.25))
+    account_age = float(features.get("account_age", 60.0))
+
+    overdraft_risk = min(max(overdraft_count / 20.0, 0.0), 1.0)
+    age_risk = min(max(1.0 - (account_age / 120.0), 0.0), 1.0)
+    failed_tx_risk = min(max(failed_tx_ratio / 0.5, 0.0), 1.0)
+
+    risk_score = (
+        0.16 * (1.0 - transaction_activity)
+        + 0.20 * (1.0 - payment_consistency)
+        + 0.18 * (1.0 - account_stability)
+        + 0.14 * overdraft_risk
+        + 0.06 * (1.0 - digital_usage)
+        + 0.12 * (1.0 - salary_consistency)
+        + 0.10 * failed_tx_risk
+        + 0.04 * age_risk
+    )
+
+    if account_stability < 0.10:
+        risk_score += 0.12
+    if failed_tx_ratio > 0.35:
+        risk_score += 0.10
+    if overdraft_count > 12:
+        risk_score += 0.08
+    if payment_consistency < 0.35 and salary_consistency < 0.35:
+        risk_score += 0.08
+
+    return max(0.0, min(1.0, risk_score))
+
+
+def heuristic_action(task_name: str, observation: dict) -> Optional[dict]:
+    features = observation.get("revealed_fields", {})
+    if not features:
+        return None
+
+    default_prob = estimate_default_prob(features)
+
+    if task_name == "binary_decision":
+        decision = "deny" if default_prob >= 0.70 else "approve"
+        return {"action_type": decision, "decision": decision}
+
+    if task_name == "risk_tiering":
+        if default_prob < 0.40:
+            tier = "low_risk"
+        elif default_prob < 0.70:
+            tier = "medium_risk"
+        else:
+            tier = "high_risk"
+        credit_limit = max(10000.0, round((1.0 - default_prob) * 500000.0, 2))
+        return {
+            "action_type": "assign_tier",
+            "tier": tier,
+            "credit_limit": credit_limit,
+        }
+
+    if task_name == "adaptive_inquiry":
+        hidden_fields = observation.get("hidden_fields", [])
+        if default_prob >= 0.70:
+            return {"action_type": "deny", "decision": "deny"}
+        if default_prob <= 0.40:
+            return {"action_type": "approve", "decision": "approve"}
+        for field_name in ["failed_tx_ratio", "salary_consistency", "digital_usage", "account_age"]:
+            if field_name in hidden_fields:
+                return {"action_type": "request_field", "field_name": field_name}
+        decision = "deny" if default_prob >= 0.70 else "approve"
+        return {"action_type": decision, "decision": decision}
+
+    return None
+
+
 def fallback_action(task_name: str) -> dict:
     if task_name == "risk_tiering":
         return {
@@ -98,6 +175,10 @@ def fallback_action(task_name: str) -> dict:
 
 
 def call_model(observation: dict, task_name: str) -> dict:
+    heuristic = heuristic_action(task_name, observation)
+    if heuristic is not None:
+        return heuristic
+
     user_prompt = (
         f"Task: {task_name}\n"
         f"Revealed fields: {json.dumps(observation.get('revealed_fields', {}), sort_keys=True)}\n"
