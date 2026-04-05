@@ -71,7 +71,7 @@ def list_tasks():
 
 @app.get("/grader")
 def grader_info():
-    s = env.state
+    s = env.state()
     return {
         "episode_id":        s.episode_id,
         "task_name":         s.task_name,

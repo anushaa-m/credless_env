@@ -22,6 +22,7 @@ dependencies = [
 
 # ✅ ADD THIS — fixes Issue 1
 [project.scripts]
+server = "server.app:main"
 credless-server = "server.app:main"
 [tool.hatch.metadata]
 allow-direct-references = true

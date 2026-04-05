@@ -68,18 +68,10 @@ def grade_adaptive_inquiry(
     agent_decision: str,
     oracle_decision: str,
     n_fields_requested: int,
-    free_requests: int = 3,   # requests before efficiency penalty starts
+    free_requests: int = 3,  
+    action_history: list = None, # requests before efficiency penalty starts
 ) -> float:
-    """
-    Hard task grader.
-    70% weight → correctness (binary)
-    30% weight → efficiency (penalised 0.10 per request beyond free_requests)
-
-    Example:
-        Correct decision, 2 requests → 0.70 + 0.30 = 1.00
-        Correct decision, 5 requests → 0.70 + max(0, 0.30 - 0.20) = 0.80
-        Wrong decision,   2 requests → 0.00 + 0.30 = 0.30
-    """
+   
     correctness = (
         1.0 if agent_decision.strip().lower() == oracle_decision.strip().lower()
         else 0.0
@@ -88,4 +80,11 @@ def grade_adaptive_inquiry(
     over_budget = max(0, n_fields_requested - free_requests)
     efficiency  = max(0.0, 1.0 - 0.10 * over_budget)
 
-    return round(0.7 * correctness + 0.3 * efficiency, 4)
+    repetition_penalty = 0.0
+    if action_history:          
+        unique_actions = len(set(str(a) for a in action_history))
+        total_actions  = len(action_history)
+        if total_actions > 2 and unique_actions / total_actions < 0.5:
+            repetition_penalty = 0.2   # agent is looping same actions
+
+    return round(max(0.0, 0.7 * correctness + 0.3 * efficiency - repetition_penalty), 4)
