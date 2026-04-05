@@ -21,6 +21,7 @@ Thumbs.db
 
 # Model artifacts (optional if large)
 *.pkl
+!credless_model/model.pkl
 *.joblib
 
 # IDE

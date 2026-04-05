@@ -28,7 +28,6 @@ Thumbs.db
 data/cd_updated.csv
 
 # ── Model artifacts ───────────────────
-credless_model/model.pkl
 
 # ── OpenEnv clone (IMPORTANT) ────────
 OpenEnv/
@@ -39,5 +38,4 @@ OpenEnv/
 venv/
 __pycache__/
 *.pyc
-credless_model/model.pkl
 *.egg-info/
