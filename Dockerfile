@@ -23,9 +23,12 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
 # ── Copy dataset first (separate layer for cache efficiency) ──────────────────
 
 # ── Copy all project files ────────────────────────────────────────────────────
+COPY data/ /app/env/data/
 COPY . /app/env
 
 # ── Train model at build time ─────────────────────────────────────────────────
+
+RUN python credless_model/train.py
 
 EXPOSE 7860
 
