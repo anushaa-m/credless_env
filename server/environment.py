@@ -11,6 +11,7 @@ from .data_generator import (
     ALWAYS_VISIBLE, HIDDEN_INITIALLY,
 )
 from .graders import (
+    MIN_SCORE,
     grade_binary_decision,
     grade_risk_tiering,
     grade_adaptive_inquiry,
@@ -195,7 +196,7 @@ class CreditAnalystEnvironment(Environment):
         if self._steps >= MAX_STEPS and not done:
             done          = True
             reward        = -0.5
-            episode_score = 0.0
+            episode_score = MIN_SCORE
             message       = "Episode timed out — max steps reached."
 
         self._cum_reward += reward

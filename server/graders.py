@@ -6,6 +6,13 @@ These are the ground-truth scorers used by the /grader endpoint
 and reported as episode_score in the final observation.
 """
 
+MIN_SCORE = 0.001
+MAX_SCORE = 0.999
+
+
+def _strict_score(value: float) -> float:
+    return round(min(MAX_SCORE, max(MIN_SCORE, float(value))), 4)
+
 
 def grade_binary_decision(
     agent_decision: str,
@@ -16,7 +23,8 @@ def grade_binary_decision(
     Full credit (1.0) for correct approve/deny, zero otherwise.
     Completely deterministic — no partial credit.
     """
-    return 1.0 if agent_decision.strip().lower() == oracle_decision.strip().lower() else 0.0
+    raw = 1.0 if agent_decision.strip().lower() == oracle_decision.strip().lower() else 0.0
+    return _strict_score(raw)
 
 
 def grade_risk_tiering(
@@ -60,8 +68,8 @@ def grade_risk_tiering(
     else:
         limit_score = 0.0
 
-    final = round(0.6 * tier_score + 0.4 * limit_score, 4)
-    return final
+    final = 0.6 * tier_score + 0.4 * limit_score
+    return _strict_score(final)
 
 
 def grade_adaptive_inquiry(
@@ -87,4 +95,5 @@ def grade_adaptive_inquiry(
         if total_actions > 2 and unique_actions / total_actions < 0.5:
             repetition_penalty = 0.2   # agent is looping same actions
 
-    return round(max(0.0, 0.7 * correctness + 0.3 * efficiency - repetition_penalty), 4)
+    final = max(0.0, 0.7 * correctness + 0.3 * efficiency - repetition_penalty)
+    return _strict_score(final)
