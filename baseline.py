@@ -18,6 +18,8 @@ load_dotenv()
 BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 MODEL    = os.getenv("BASELINE_MODEL", "gpt-4o-mini")
 RUNS     = int(os.getenv("BASELINE_RUNS", "5"))
+MIN_SCORE = 0.01
+MAX_SCORE = 0.99
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
@@ -31,6 +33,10 @@ HINTS = {
     "risk_tiering":     'Return {"action_type":"assign_tier","tier":"low_risk|medium_risk|high_risk","credit_limit":<INR float>}',
     "adaptive_inquiry": 'First request fields: {"action_type":"request_field","field_name":"<name>"}, then decide.',
 }
+
+
+def strict_score(value: float) -> float:
+    return round(min(MAX_SCORE, max(MIN_SCORE, float(value))), 4)
 
 
 def _call_llm(obs: dict) -> dict:         # ✅ FIXED: was named _llm in run_episode call
@@ -71,12 +77,12 @@ def run_episode(task: str, retries: int = 2) -> float:
                 r      = requests.post(f"{BASE_URL}/step",
                                        json=action, timeout=30)
                 obs    = r.json().get("observation", r.json())
-            return float(obs.get("episode_score", 0.0))
+            return strict_score(float(obs.get("episode_score", MIN_SCORE)))
         except Exception:
             if attempt == retries:
-                return 0.0
+                return MIN_SCORE
             time.sleep(2 ** attempt)
-    return 0.0
+    return MIN_SCORE
 
 
 def main(output_json: bool = False):
@@ -85,8 +91,8 @@ def main(output_json: bool = False):
     for task in tasks:
         scores = [run_episode(task) for _ in range(RUNS)]
         results[task] = {
-            "mean_score": round(sum(scores) / len(scores), 4),
-            "scores":     [round(s, 4) for s in scores],
+            "mean_score": strict_score(sum(scores) / len(scores)),
+            "scores":     [strict_score(s) for s in scores],
             "runs":       RUNS,
         }
     if output_json:

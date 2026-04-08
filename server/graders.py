@@ -6,8 +6,8 @@ These are the ground-truth scorers used by the /grader endpoint
 and reported as episode_score in the final observation.
 """
 
-MIN_SCORE = 0.001
-MAX_SCORE = 0.999
+MIN_SCORE = 0.01
+MAX_SCORE = 0.99
 
 
 def _strict_score(value: float) -> float:

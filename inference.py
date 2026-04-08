@@ -26,6 +26,8 @@ TASKS = ["binary_decision", "risk_tiering", "adaptive_inquiry"]
 TASK_NAME = os.getenv("CREDLESS_TASK")
 BENCHMARK = os.getenv("CREDLESS_BENCHMARK", "credless-env")
 MAX_STEPS = 12
+MIN_SCORE = 0.01
+MAX_SCORE = 0.99
 
 client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
@@ -80,6 +82,10 @@ def format_action(action: dict) -> str:
     return sanitize_log_value(json.dumps(action))
 
 
+def strict_score(value: float) -> float:
+    return round(min(MAX_SCORE, max(MIN_SCORE, float(value))), 4)
+
+
 # ── Simple fallback logic (safe baseline) ───────────
 def fallback_action(task_name: str) -> dict:
     if task_name == "risk_tiering":
@@ -129,7 +135,7 @@ def run_task(task_name: str) -> float:
             reset_response.raise_for_status()
         except Exception as e:
             print(f"[ERROR] Reset failed: {e}")
-            return 0.0
+            return MIN_SCORE
 
         result = reset_response.json()
         observation = result.get("observation", result)
@@ -172,7 +178,7 @@ def run_task(task_name: str) -> float:
                 break
 
     finally:
-        final_score = float(observation.get("episode_score", 0.0)) if observation else 0.0
+        final_score = strict_score(float(observation.get("episode_score", MIN_SCORE)) if observation else MIN_SCORE)
         success = final_score > 0.0
         log_end(success, steps_taken, final_score, rewards)
 
