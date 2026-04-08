@@ -28,7 +28,8 @@ COPY . /app/env
 
 # ── Train model at build time ─────────────────────────────────────────────────
 
-RUN python credless_model/train.py
+
+RUN echo "Skipping training during build"
 
 EXPOSE 7860
 
