@@ -1,6 +1,6 @@
 name: credless-env
 version: "1.0.0"
-entry_point: server.app:app        # ✅ required by validator
+entry_point: server.app:app        
 description: >
   AI Credit Analyst — RL environment where agents evaluate loan applicants
   using behavioural financial data. Three tasks: binary approval (easy),
