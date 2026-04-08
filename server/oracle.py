@@ -14,12 +14,21 @@ FEATURE_ORDER = [
 class CredLessOracle:
 
     def __init__(self):
+        self._warned_legacy_fallback = False
+
+        # ✅ FIX: do NOT crash if model missing
         if not MODEL_PATH.exists():
-            raise FileNotFoundError(
-                f"Model not found at {MODEL_PATH}. "
-                "Run: python credless_model/train.py"
-            )
+            print(f"[Oracle WARNING] Model not found at {MODEL_PATH}. Using fallback.")
+            self.model = None
+            self.model_name = "fallback"
+            self.metrics = {}
+            self.low_thresh = 0.40
+            self.high_thresh = 0.70
+            self.use_fallback = True
+            return
+
         artifact = joblib.load(MODEL_PATH)
+        self.use_fallback = False
 
         if isinstance(artifact, dict):
             self.model = artifact["model"]
@@ -34,10 +43,10 @@ class CredLessOracle:
             self.metrics = {}
             self.low_thresh = 0.40
             self.high_thresh = 0.70
-        self._warned_legacy_fallback = False
 
         auc = self.metrics.get("test_auc", "?")
         auc_display = f"{auc:.4f}" if isinstance(auc, float) else str(auc)
+
         print(
             f"[Oracle] model={self.model_name}  "
             f"test_auc={auc_display}  "
@@ -45,15 +54,6 @@ class CredLessOracle:
         )
 
     def _legacy_default_prob(self, features: dict) -> float:
-        """
-        Fallback scorer for the original 8-feature environment.
-
-        This keeps the environment operational even if the saved model artifact
-        was trained on a newer 20-feature dataset pipeline. The score is a
-        conservative business-rule approximation: weak stability, high
-        overdrafts, and high failed-transaction ratios push applicants toward
-        denial faster than the LLM's naive "approve" tendency.
-        """
         transaction_activity = float(features["transaction_activity"])
         payment_consistency = float(features["payment_consistency"])
         account_stability = float(features["account_stability"])
@@ -78,7 +78,6 @@ class CredLessOracle:
             + 0.04 * age_risk
         )
 
-        # Hard-risk overrides for obviously weak profiles.
         if account_stability < 0.10:
             risk_score += 0.12
         if failed_tx_ratio > 0.35:
@@ -91,14 +90,18 @@ class CredLessOracle:
         return float(np.clip(risk_score, 0.0, 1.0))
 
     def predict(self, features: dict) -> dict:
-        x = np.array([[features[f] for f in FEATURE_ORDER]])
-        try:
-            prob = float(self.model.predict_proba(x)[0][1])
-        except Exception as exc:
-            if not self._warned_legacy_fallback:
-                print(f"[Oracle] falling back to legacy scorer: {exc}")
-                self._warned_legacy_fallback = True
+        # ✅ FIX: if no model → always fallback
+        if self.model is None or self.use_fallback:
             prob = self._legacy_default_prob(features)
+        else:
+            x = np.array([[features[f] for f in FEATURE_ORDER]])
+            try:
+                prob = float(self.model.predict_proba(x)[0][1])
+            except Exception as exc:
+                if not self._warned_legacy_fallback:
+                    print(f"[Oracle] falling back to legacy scorer: {exc}")
+                    self._warned_legacy_fallback = True
+                prob = self._legacy_default_prob(features)
 
         if prob < self.low_thresh:
             tier, decision = "low_risk", "approve"
