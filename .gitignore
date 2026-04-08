@@ -21,22 +21,19 @@ Thumbs.db
 # ── Logs ─────────────────────────────
 *.log
 
-# ── Data files (optional, if large) ──
+# ── Data files ───────────────────────
 *.csv
-*.pkl
 *.joblib
-data/cd_updated.csv
+
+# Ignore all .pkl files
+*.pkl
+
+# BUT allow this specific model file
 !credless_model/model.pkl
 
-# ── Model artifacts ───────────────────
-
-# ── OpenEnv clone (IMPORTANT) ────────
+# ── OpenEnv clone ────────────────────
 OpenEnv/
 
 # ── Cache ───────────────────────────
 .cache/
-.env
-venv/
-__pycache__/
-*.pyc
 *.egg-info/
