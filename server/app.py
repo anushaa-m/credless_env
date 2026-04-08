@@ -2,6 +2,8 @@
 import json
 import os
 import subprocess
+import sys
+import os
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -11,6 +13,8 @@ from models import CreditAction, CreditObservation
 from .environment import CreditAnalystEnvironment    # ✅ relative import
 from .tasks import TASK_REGISTRY                     # ✅ relative import
 from .data_generator import FIELD_RANGES             # ✅ relative import
+
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 env = CreditAnalystEnvironment()
 
