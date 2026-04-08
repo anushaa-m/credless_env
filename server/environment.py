@@ -189,7 +189,7 @@ class CreditAnalystEnvironment(Environment):
             message = f"Unknown action_type '{atype}'."
 
         # ── Apply loop penalty ────────────────────────────────────────────────
-        reward = round(reward - loop_penalty, 4)
+        reward = float(max(0.0, min(1.0, round(reward - loop_penalty, 4))))
 
         # ── Timeout guard ─────────────────────────────────────────────────────
         if self._steps >= MAX_STEPS and not done:

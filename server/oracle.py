@@ -14,11 +14,17 @@ FEATURE_ORDER = [
 class CredLessOracle:
 
     def __init__(self):
+        self._warned_legacy_fallback = False
+
         if not MODEL_PATH.exists():
-            raise FileNotFoundError(
-                f"Model not found at {MODEL_PATH}. "
-                "Run: python credless_model/train.py"
-            )
+            print(f"[Oracle] ⚠️ Model not found at {MODEL_PATH}, using fallback scorer")
+            self.model = None
+            self.model_name = "fallback"
+            self.metrics = {}
+            self.low_thresh = 0.40
+            self.high_thresh = 0.70
+            return
+
         artifact = joblib.load(MODEL_PATH)
 
         if isinstance(artifact, dict):
@@ -34,7 +40,6 @@ class CredLessOracle:
             self.metrics = {}
             self.low_thresh = 0.40
             self.high_thresh = 0.70
-        self._warned_legacy_fallback = False
 
         auc = self.metrics.get("test_auc", "?")
         auc_display = f"{auc:.4f}" if isinstance(auc, float) else str(auc)
@@ -93,7 +98,10 @@ class CredLessOracle:
     def predict(self, features: dict) -> dict:
         x = np.array([[features[f] for f in FEATURE_ORDER]])
         try:
-            prob = float(self.model.predict_proba(x)[0][1])
+            if self.model is None:
+                prob = self._legacy_default_prob(features)
+            else:
+                prob = float(self.model.predict_proba(x)[0][1])
         except Exception as exc:
             if not self._warned_legacy_fallback:
                 print(f"[Oracle] falling back to legacy scorer: {exc}")

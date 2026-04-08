@@ -1,6 +1,6 @@
 # models.py
 from __future__ import annotations
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field
 from openenv.core.env_server.types import Action, Observation
 
@@ -25,12 +25,6 @@ class CreditObservation(Observation):
     episode_score:     float            = Field(0.0)
 
 
-# ✅ NEW: Required by OpenEnv spec
-class CreditReward(BaseModel):
-    value:  float = Field(0.0,  description="Scalar reward for this step")
-    reason: str   = Field("",   description="Human-readable reward explanation")
-
-
 # ✅ FIXED: Now a Pydantic model so FastAPI can serialize it
 class CreditState(BaseModel):
     episode_id:            str       = Field("")
@@ -42,3 +36,25 @@ class CreditState(BaseModel):
     ground_truth_decision: str       = Field("")
     ground_truth_prob:     float     = Field(0.0)
     trajectory_length:     int       = Field(0)
+
+
+class StepResponse(BaseModel):
+    observation: CreditObservation
+    reward: float
+    done: bool
+    info: Dict[str, Any]
+
+
+class ResetResponse(BaseModel):
+    observation: CreditObservation
+    reward: float
+    done: bool
+    info: Dict[str, Any]
+
+
+class HealthResponse(BaseModel):
+    status: str
+
+
+class StateResponse(BaseModel):
+    state: CreditState
