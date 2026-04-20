@@ -19,6 +19,27 @@ from server.oracle import (
 )
 
 
+def score_to_tier(confidence: float) -> str:
+    if float(confidence) >= TIER_A_THRESHOLD:
+        return "A"
+    if float(confidence) >= TIER_B_THRESHOLD:
+        return "B"
+    return "C"
+
+
+def score_to_decision(confidence: float) -> str:
+    return "approve" if score_to_tier(confidence) in {"A", "B"} else "reject"
+
+
+def score_to_prediction(confidence: float) -> Dict[str, object]:
+    confidence = max(0.0, min(1.0, float(confidence)))
+    return {
+        "decision": score_to_decision(confidence),
+        "risk_tier": score_to_tier(confidence),
+        "confidence": confidence,
+    }
+
+
 def oracle_decision(applicant: Dict[str, object]) -> Dict[str, object]:
     result = _server_oracle_decision(applicant)
     return {

@@ -1,273 +1,391 @@
+"""
+inference.py - FinVerse end-to-end inference and evaluation
+
+Run:
+    python inference.py
+    python inference.py --csv path/to/data.csv
+    python inference.py --samples 20
+
+What it does:
+    1. Loads model (trains from scratch if not found)
+    2. Loads real CSV or synthetic fallback data
+    3. Runs model predictions
+    4. Runs oracle on the same rows
+    5. Scores predictions vs oracle
+    6. Prints metrics and sample outputs
+"""
+
+from __future__ import annotations
+
+import argparse
 import json
 import os
-from typing import Dict, List, Optional
+import pickle
+import time
+from pathlib import Path
 
-import requests
-from dotenv import load_dotenv
-from openai import OpenAI
+import numpy as np
+import pandas as pd
+from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.model_selection import train_test_split
 
-load_dotenv()
+try:
+    from lightgbm import LGBMClassifier
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
-HF_TOKEN = os.getenv("HF_TOKEN")
-ENV_BASE_URL = os.getenv("ENV_BASE_URL", "https://anushaa-m-credless-env.hf.space")
+    HAS_LGBM = True
+except ImportError:
+    HAS_LGBM = False
 
-TASKS = ["binary_decision", "risk_tiering", "adaptive_inquiry"]
-TASK_NAME = os.getenv("CREDLESS_TASK")
-BENCHMARK = os.getenv("CREDLESS_BENCHMARK", "credless-env")
-MAX_STEPS = 8
-MIN_SCORE = 0.01
-MAX_SCORE = 0.99
+from sklearn.linear_model import LogisticRegression
 
-client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN) if HF_TOKEN else None
-
-SYSTEM_PROMPT = (
-    "You are a lending analyst in a stateful investigation environment. "
-    "Return exactly one valid JSON action object and nothing else. "
-    "Valid action_type values are request_info, query_market, flag_fraud, approve, deny, and escalate. "
-    "Non-terminal actions can leave reasoning empty. Terminal actions must include reasoning."
+from data.synthetic_generator import generate_synthetic_data
+from pipeline.oracle import oracle_decision
+from pipeline.preprocessor import (
+    CATEGORICAL_COLS,
+    NUMERIC_COLS,
+    _clip_outliers,
+    _encode_categoricals,
+    _fill_missing,
 )
-
-REQUEST_PRIORITY = [
-    "total_delinquency_score",
-    "overdraft_risk",
-    "medical_stress_score",
-    "debt_burden_score",
-    "payment_reliability",
-    "income_capacity_score",
-    "employment_stability",
-    "account_maturity",
-]
+from pipeline.scorer import batch_score
 
 
-def log_start(task: str, env: str, model: str) -> None:
-    print(f"[START] task={task} env={env} model={model}", flush=True)
+GREEN = "\033[92m"
+RED = "\033[91m"
+YELLOW = "\033[93m"
+CYAN = "\033[96m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+TIER_COLOR = {"A": GREEN, "B": YELLOW, "C": RED}
+DEC_COLOR = {"approve": GREEN, "reject": RED}
+
+MODEL_PATH = Path("models/saved/finverse_model.pkl")
+META_PATH = Path("models/saved/model_meta.json")
+SCALER_PATH = Path("models/saved/scaler.pkl")
 
 
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    error_val = error if error else "null"
-    print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} "
-        f"done={str(done).lower()} error={error_val}",
-        flush=True,
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="FinVerse inference pipeline")
+    parser.add_argument("--csv", type=str, default=None, help="Path to real CSV")
+    parser.add_argument(
+        "--n_rows",
+        type=int,
+        default=12000,
+        help="Synthetic rows when CSV is missing or omitted",
+    )
+    parser.add_argument("--samples", type=int, default=20, help="Sample rows to print")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--retrain", action="store_true", help="Force retrain model")
+    parser.add_argument("--jsonl", type=str, default="data/dataset.jsonl")
+    return parser.parse_args()
+
+
+def prob_to_tier(prob: float) -> str:
+    if prob >= 0.70:
+        return "A"
+    if prob >= 0.45:
+        return "B"
+    return "C"
+
+
+def prob_to_decision(prob: float) -> str:
+    return "approve" if prob >= 0.50 else "reject"
+
+
+def _approve_target_from_raw(value: object) -> int:
+    return 0 if int(value) == 1 else 1
+
+
+def _approve_target_from_value(value: object) -> int:
+    return int(value)
+
+
+def _build_model(seed: int):
+    if HAS_LGBM:
+        return LGBMClassifier(
+            n_estimators=400,
+            learning_rate=0.05,
+            max_depth=6,
+            num_leaves=63,
+            min_child_samples=20,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_alpha=0.1,
+            reg_lambda=0.1,
+            class_weight="balanced",
+            random_state=seed,
+            verbose=-1,
+        )
+
+    return LogisticRegression(
+        max_iter=1000,
+        C=1.0,
+        class_weight="balanced",
+        random_state=seed,
     )
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(
-        f"[END] success={str(success).lower()} steps={steps} "
-        f"score={score:.3f} rewards={rewards_str}",
-        flush=True,
-    )
-
-
-def sanitize_log_value(value: str) -> str:
-    return " ".join(str(value).split())
-
-
-def format_action(action: dict) -> str:
-    return sanitize_log_value(json.dumps(action))
-
-
-def strict_score(value: float) -> float:
-    return round(min(MAX_SCORE, max(MIN_SCORE, float(value))), 4)
-
-
-def profile_values(observation: Dict[str, object]) -> Dict[str, float]:
-    profile = observation.get("applicant", {}).get("profile", {})
-    return {field: float(payload.get("value", 0.0)) for field, payload in profile.items()}
-
-
-def profile_confidence(observation: Dict[str, object]) -> Dict[str, float]:
-    profile = observation.get("applicant", {}).get("profile", {})
-    return {field: float(payload.get("confidence", 0.0)) for field, payload in profile.items()}
-
-
-def _hidden_request_target(observation: Dict[str, object]) -> Optional[str]:
-    hidden = observation.get("applicant", {}).get("missing_fields", [])
-    for field in REQUEST_PRIORITY:
-        if field in hidden:
-            return field
-    return hidden[0] if hidden else None
-
-
-def _detect_fraud_signal(observation: Dict[str, object]) -> bool:
-    fields = profile_values(observation)
-    confidence = profile_confidence(observation)
-    low_conf = {field: 1.0 - value for field, value in confidence.items()}
-    suspicious_income = fields.get("income_capacity_score", 0.0) > 0.82 and low_conf.get("income_capacity_score", 0.0) > 0.28
-    suspicious_wealth = fields.get("net_worth_score", 0.0) > 0.80 and low_conf.get("net_worth_score", 0.0) > 0.28
-    suspicious_clean_profile = (
-        fields.get("payment_reliability", 0.0) > 0.88
-        and fields.get("overdraft_risk", 0.0) < 0.10
-        and low_conf.get("payment_reliability", 0.0) > 0.25
-    )
-    return bool(suspicious_income or suspicious_wealth or suspicious_clean_profile)
-
-
-def _market_rate_and_tier(default_risk: float, market_index: float) -> Dict[str, object]:
-    if default_risk < 0.35:
-        tier = "low_risk"
-        rate = 10.5
-    elif default_risk < 0.6:
-        tier = "medium_risk"
-        rate = 14.0
+def _load_raw_frame(csv_path: str | None, n_rows: int, seed: int) -> tuple[pd.DataFrame, str]:
+    if csv_path and Path(csv_path).exists():
+        raw_df = pd.read_csv(csv_path, low_memory=False)
+        raw_df.columns = [column.strip().lower().replace(" ", "_") for column in raw_df.columns]
+        raw_df = raw_df.loc[:, ~raw_df.columns.duplicated()]
+        source = str(Path(csv_path))
     else:
-        tier = "high_risk"
-        rate = 18.5
+        if csv_path:
+            print(f"[inference] CSV not found at '{csv_path}' - using synthetic fallback")
+        else:
+            print("[inference] No CSV provided - using synthetic fallback")
+        raw_df = generate_synthetic_data(n_samples=n_rows, seed=seed, include_target=True)
+        source = "synthetic"
 
-    rate += (market_index - 1.0) * 5.0
-    decision = "approve" if tier != "high_risk" else "deny"
-    return {
-        "decision": decision,
-        "tier": tier,
-        "rate": round(rate, 2),
+    return raw_df.reset_index(drop=True), source
+
+
+def _build_ml_frame(raw_df: pd.DataFrame, source: str) -> tuple[pd.DataFrame, list[str]]:
+    df = raw_df.copy()
+    df = _fill_missing(df)
+    df = _clip_outliers(df)
+    df = _encode_categoricals(df)
+
+    ml_features = [column for column in NUMERIC_COLS if column in df.columns]
+    for column in CATEGORICAL_COLS:
+        enc_col = f"{column}_enc"
+        if enc_col in df.columns:
+            ml_features.append(enc_col)
+    ml_features = list(dict.fromkeys(ml_features))
+
+    df_model = df[ml_features].copy()
+    if "target" in df.columns:
+        target_converter = _approve_target_from_raw if source != "synthetic" else _approve_target_from_value
+        df_model["target"] = df["target"].apply(target_converter).astype(int).values
+    else:
+        df_model["target"] = 0
+    return df_model, ml_features
+
+
+def _save_artifacts(model, scaler, feature_cols: list[str], y_train: np.ndarray, y_val: np.ndarray, val_acc: float, val_auc: float, seed: int, jsonl_path: str) -> None:
+    os.makedirs("models/saved", exist_ok=True)
+
+    with open(SCALER_PATH, "wb") as handle:
+        pickle.dump(scaler, handle)
+
+    artifact = {
+        "model": model,
+        "feature_cols": feature_cols,
+        "model_type": "lightgbm" if HAS_LGBM else "logistic_regression",
+        "val_accuracy": round(float(val_acc), 4),
+        "val_auc": round(float(val_auc), 4),
+        "seed": int(seed),
     }
+    with open(MODEL_PATH, "wb") as handle:
+        pickle.dump(artifact, handle)
+
+    metadata = {
+        "feature_cols": feature_cols,
+        "model_type": artifact["model_type"],
+        "val_accuracy": round(float(val_acc), 4),
+        "val_auc": round(float(val_auc), 4),
+        "n_train": int(len(y_train)),
+        "n_val": int(len(y_val)),
+        "approve_rate_train": round(float(np.mean(y_train)), 4),
+        "target_positive_class": "approve",
+        "jsonl_path": jsonl_path,
+        "model_path": str(MODEL_PATH).replace("\\", "/"),
+        "scaler_path": str(SCALER_PATH).replace("\\", "/"),
+    }
+    with open(META_PATH, "w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2)
 
 
-def _estimate_default_risk(fields: Dict[str, float], market_index: float) -> float:
-    risk = (
-        0.16 * fields.get("revolving_utilization", 0.5)
-        + 0.08 * fields.get("delinquency_30_59", 0.0)
-        + 0.10 * fields.get("delinquency_60_89", 0.0)
-        + 0.12 * fields.get("delinquency_90plus", 0.0)
-        + 0.12 * fields.get("total_delinquency_score", 0.0)
-        + 0.12 * fields.get("debt_burden_score", 0.0)
-        + 0.08 * fields.get("medical_stress_score", 0.0)
-        + 0.08 * fields.get("overdraft_risk", 0.0)
-        + 0.06 * fields.get("location_risk_index", 0.0)
-        + 0.08 * (1.0 - fields.get("payment_reliability", 0.5))
-        + 0.07 * (1.0 - fields.get("income_capacity_score", 0.5))
-        + 0.05 * (1.0 - fields.get("employment_stability", 0.5))
-        + 0.04 * (1.0 - fields.get("account_maturity", 0.5))
+def _train_model(df_model: pd.DataFrame, feature_cols: list[str], seed: int, jsonl_path: str):
+    X = df_model[feature_cols].values
+    y = df_model["target"].values
+
+    X_train, X_val, y_train, y_val = train_test_split(
+        X,
+        y,
+        test_size=0.20,
+        random_state=seed,
+        stratify=y,
     )
-    risk -= 0.04 * fields.get("net_worth_score", 0.5)
-    risk -= 0.02 * fields.get("asset_ownership_score", 0.5)
-    risk *= market_index
-    return max(0.0, min(1.0, risk))
+
+    from sklearn.preprocessing import StandardScaler
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_val_scaled = scaler.transform(X_val)
+
+    model = _build_model(seed)
+    model.fit(X_train_scaled, y_train)
+
+    y_prob = model.predict_proba(X_val_scaled)[:, 1]
+    y_pred = (y_prob >= 0.50).astype(int)
+    val_acc = accuracy_score(y_val, y_pred)
+    val_auc = roc_auc_score(y_val, y_prob)
+
+    print(f"[inference] trained model | val_acc={val_acc:.4f} | val_auc={val_auc:.4f}")
+    _save_artifacts(model, scaler, feature_cols, y_train, y_val, val_acc, val_auc, seed, jsonl_path)
+    return model, scaler, feature_cols
 
 
-def policy_action(observation: Dict[str, object], task_name: str) -> Dict[str, object]:
-    hidden = observation.get("applicant", {}).get("missing_fields", [])
+def _load_saved_model():
+    with open(MODEL_PATH, "rb") as handle:
+        artifact = pickle.load(handle)
+    with open(SCALER_PATH, "rb") as handle:
+        scaler = pickle.load(handle)
 
-    if len(hidden) > 0 and observation.get("step", 0) < 3:
-        target = _hidden_request_target(observation)
-        if target:
-            return {"action_type": "request_info", "params": {"field": target}, "reasoning": ""}
+    if isinstance(artifact, dict):
+        model = artifact["model"]
+        feature_cols = artifact["feature_cols"]
+    else:
+        raise ValueError("Unexpected saved model format")
+    return model, scaler, feature_cols
 
-    if not observation.get("fraud_flags_raised") and _detect_fraud_signal(observation):
-        return {
-            "action_type": "flag_fraud",
-            "params": {"reason": "Confidence anomalies suggest potential misreporting."},
-            "reasoning": "",
+
+def _ensure_model(args: argparse.Namespace, df_model: pd.DataFrame, feature_cols: list[str]):
+    if args.retrain or not MODEL_PATH.exists() or not SCALER_PATH.exists() or not META_PATH.exists():
+        if args.retrain:
+            print("[inference] --retrain flag set - retraining model")
+        else:
+            print("[inference] No saved model found - training now")
+        return _train_model(df_model, feature_cols, args.seed, args.jsonl)
+    print("[inference] Loading saved model")
+    return _load_saved_model()
+
+
+def _print_banner() -> None:
+    print("\n" + "=" * 65)
+    print(f"  {BOLD}{CYAN}FinVerse - Inference & Evaluation{RESET}")
+    print("  Applicant Profile -> Model -> Oracle -> Score")
+    print("=" * 65)
+
+
+def _print_sample(i: int, row_raw: dict, model_pred: dict, oracle_result: dict, score: float) -> None:
+    model_decision = model_pred["decision"]
+    model_tier = model_pred["risk_tier"]
+    model_conf = model_pred["confidence"]
+    oracle_decision_value = oracle_result["decision"]
+    oracle_tier = oracle_result["risk_tier"]
+    oracle_conf = oracle_result["confidence"]
+    match = "OK" if model_decision == oracle_decision_value else "NO"
+    match_color = GREEN if model_decision == oracle_decision_value else RED
+
+    income = float(row_raw.get("monthlyincome", 0) or 0)
+    late_90 = int(float(row_raw.get("numberoftimes90dayslate", 0) or 0))
+    debt = float(row_raw.get("debtratio", 0) or 0)
+    failed_txn = float(row_raw.get("failed_txn_ratio", 0) or 0)
+
+    print(
+        f"\n  {BOLD}Sample {i + 1:>3}{RESET}  "
+        f"Income=INR {income:>8,.0f}  Late90={late_90}  DebtR={debt:.2f}  FailTxn={failed_txn:.2f}"
+    )
+    print(
+        f"    Model  -> {DEC_COLOR[model_decision]}{model_decision:<7}{RESET}  "
+        f"Tier={TIER_COLOR[model_tier]}{model_tier}{RESET}  conf={model_conf:.3f}"
+    )
+    print(
+        f"    Oracle -> {DEC_COLOR[oracle_decision_value]}{oracle_decision_value:<7}{RESET}  "
+        f"Tier={TIER_COLOR[oracle_tier]}{oracle_tier}{RESET}  conf={oracle_conf:.3f}"
+    )
+    print(f"    Score  -> {match_color}{score:.4f}  {match}{RESET}")
+
+
+def main() -> None:
+    args = parse_args()
+    _print_banner()
+    started = time.time()
+
+    print(f"\n{BOLD}[1/4] Loading Data{RESET}")
+    raw_df, source = _load_raw_frame(args.csv, args.n_rows, args.seed)
+    df_model, ml_features = _build_ml_frame(raw_df, source)
+
+    print(f"\n{BOLD}[2/4] Loading / Training Model{RESET}")
+    model, scaler, feature_cols = _ensure_model(args, df_model, ml_features)
+
+    for column in feature_cols:
+        if column not in df_model.columns:
+            df_model[column] = 0.0
+
+    X = df_model[feature_cols].values
+    X_scaled = scaler.transform(X)
+    y_true = df_model["target"].values
+
+    print(f"\n{BOLD}[3/4] Running Predictions{RESET}")
+    y_prob = model.predict_proba(X_scaled)[:, 1]
+    model_predictions = [
+        {
+            "decision": prob_to_decision(prob),
+            "risk_tier": prob_to_tier(prob),
+            "confidence": round(float(prob), 4),
         }
+        for prob in y_prob
+    ]
 
-    if not observation.get("market_visible", False) and observation.get("step", 0) < MAX_STEPS - 1:
-        return {"action_type": "query_market", "params": {}, "reasoning": ""}
+    print(f"\n{BOLD}[4/4] Oracle + Scoring{RESET}")
+    oracle_results = [oracle_decision(raw_df.iloc[idx].to_dict()) for idx in range(len(raw_df))]
+    results = batch_score(model_predictions, oracle_results)
 
-    fields = profile_values(observation)
-    market_state = observation.get("market_state") or {}
-    market_index = float(market_state.get("default_risk_index", 1.0))
-    market_name = market_state.get("name", "unqueried")
-    risk = _estimate_default_risk(fields, market_index)
-    pricing = _market_rate_and_tier(risk, market_index)
-    reasoning = (
-        f"Decision based on payment_reliability={fields.get('payment_reliability', 0.0):.2f}, "
-        f"debt_burden_score={fields.get('debt_burden_score', 0.0):.2f}, "
-        f"overdraft_risk={fields.get('overdraft_risk', 0.0):.2f}, and market={market_name}."
-    )
+    total = len(model_predictions)
+    sample_count = min(args.samples, total)
+    sample_indices = np.random.default_rng(args.seed).choice(total, sample_count, replace=False)
 
-    params = {"tier": pricing["tier"], "rate": pricing["rate"]} if task_name == "risk_tiering" or pricing["decision"] == "approve" else {}
-    return {
-        "action_type": pricing["decision"],
-        "params": params,
-        "reasoning": reasoning,
-    }
+    print(f"\n{'-' * 65}")
+    print(f"  {BOLD}Sample Predictions (showing {sample_count} rows){RESET}")
+    print(f"{'-' * 65}")
 
-
-def call_model(observation: Dict[str, object], task_name: str) -> Dict[str, object]:
-    if client is None:
-        return policy_action(observation, task_name)
-
-    try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(observation)},
-            ],
-            temperature=0.0,
-            max_tokens=180,
+    for rank, idx in enumerate(sample_indices):
+        _print_sample(
+            rank,
+            raw_df.iloc[idx].to_dict(),
+            model_predictions[idx],
+            oracle_results[idx],
+            results["scores"][idx],
         )
-        content = (completion.choices[0].message.content or "").strip()
-        parsed = json.loads(content)
-        if not isinstance(parsed, dict):
-            raise ValueError("Model response was not a JSON object")
-        return parsed
-    except Exception:
-        return policy_action(observation, task_name)
 
+    elapsed = time.time() - started
+    gt_acc = accuracy_score(y_true, (y_prob >= 0.50).astype(int))
+    gt_auc = roc_auc_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else float("nan")
 
-def run_task(task_name: str) -> float:
-    rewards: List[float] = []
-    steps_taken = 0
-    success = False
-    observation: Dict[str, object] = {}
+    model_tiers = [pred["risk_tier"] for pred in model_predictions]
+    oracle_tiers = [oracle["risk_tier"] for oracle in oracle_results]
 
-    log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
+    def tier_dist(tiers: list[str]) -> dict[str, str]:
+        n = len(tiers)
+        return {tier: f"{tiers.count(tier) / n:.1%}" for tier in ["A", "B", "C"]}
 
-    try:
-        reset_response = requests.post(
-            f"{ENV_BASE_URL}/reset",
-            json={"task_name": task_name},
-            timeout=30,
-        )
-        reset_response.raise_for_status()
-        result = reset_response.json()
-        observation = result.get("observation", result)
-        done = bool(result.get("done", False))
+    model_dist = tier_dist(model_tiers)
+    oracle_dist = tier_dist(oracle_tiers)
+    model_approve = sum(1 for pred in model_predictions if pred["decision"] == "approve") / total
+    oracle_approve = sum(1 for oracle in oracle_results if oracle["decision"] == "approve") / total
 
-        while not done and steps_taken < MAX_STEPS:
-            steps_taken += 1
-            action = call_model(observation, task_name)
-            action_str = format_action(action)
-            error = None
-
-            try:
-                step_response = requests.post(
-                    f"{ENV_BASE_URL}/step",
-                    json=action,
-                    timeout=30,
-                )
-                step_response.raise_for_status()
-                result = step_response.json()
-                observation = result.get("observation", result)
-                reward = float(result.get("reward", 0.0))
-                done = bool(result.get("done", False))
-                success = done and float(observation.get("episode_score", 0.0)) > 0.0
-            except Exception as exc:
-                reward = 0.0
-                done = True
-                error = sanitize_log_value(str(exc))
-                success = False
-
-            rewards.append(reward)
-            log_step(steps_taken, action_str, reward, done, error)
-
-    finally:
-        final_score = strict_score(float(observation.get("episode_score", MIN_SCORE)) if observation else MIN_SCORE)
-        success = final_score > 0.0
-        log_end(success, steps_taken, final_score, rewards)
-
-    return final_score
-
-
-def main():
-    tasks = [TASK_NAME] if TASK_NAME else TASKS
-    for task_name in tasks:
-        run_task(task_name)
+    print(f"\n{'=' * 65}")
+    print(f"  {BOLD}{CYAN}FINAL METRICS{RESET}")
+    print(f"{'=' * 65}")
+    print(f"  Total samples evaluated : {total}")
+    print(f"  Data source             : {source}")
+    print(f"  Elapsed time            : {elapsed:.1f}s")
+    print()
+    print(f"  {BOLD}vs Target{RESET}")
+    print(f"    Accuracy              : {GREEN}{gt_acc:.4f}{RESET}")
+    if not np.isnan(gt_auc):
+        print(f"    ROC-AUC               : {GREEN}{gt_auc:.4f}{RESET}")
+    print()
+    print(f"  {BOLD}vs Oracle{RESET}")
+    print(f"    Decision accuracy     : {GREEN}{results['decision_acc']:.4f}{RESET}")
+    print(f"    Tier accuracy         : {GREEN}{results['tier_acc']:.4f}{RESET}")
+    print(f"    Avg composite score   : {GREEN}{results['avg_score']:.4f}{RESET}")
+    print(f"    Min / Max score       : {min(results['scores']):.4f} / {max(results['scores']):.4f}")
+    print()
+    print(f"  {BOLD}Tier Distribution{RESET}")
+    print(f"    Model  -> A:{model_dist['A']}  B:{model_dist['B']}  C:{model_dist['C']}")
+    print(f"    Oracle -> A:{oracle_dist['A']}  B:{oracle_dist['B']}  C:{oracle_dist['C']}")
+    print()
+    print(f"  {BOLD}Approve Rate{RESET}")
+    print(f"    Model  : {model_approve:.2%}")
+    print(f"    Oracle : {oracle_approve:.2%}")
+    print(f"{'=' * 65}\n")
 
 
 if __name__ == "__main__":
