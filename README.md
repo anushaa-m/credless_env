@@ -1,263 +1,216 @@
----
-title: CredLess-Env
-emoji: 🏦
-colorFrom: green
-colorTo: blue
-sdk: docker
-pinned: false
-tags:
-  - openenv
-  - reinforcement-learning
-  - finance
-  - credit-scoring
-license: mit
----
+# CredLess-Env / FinVerse Compatibility Layer
 
+This repository is still primarily an OpenEnv-style credit analyst environment, but it now also includes a FinVerse-compatible data pipeline layer for preprocessing, oracle logic, reasoning, scoring, training, and synthetic fallback data generation.
 
+The important distinction is:
 
-# CredLess-Env 🏦
+- `server/` and the root `inference.py` power the environment-style workflow.
+- `pipeline/`, `data/synthetic_generator.py`, and root `train.py` are the FinVerse-compatible compatibility layer.
 
-**OpenEnv RL environment — AI Credit Analyst for alternative credit scoring.**
+## Current Structure
 
-An agent acts as a loan officer evaluating applicants who have no traditional
-credit history, using only behavioural financial signals. Powered by CredLess,
-an explainable ML model (Logistic Regression, AUC ≈ 0.93).
-
-[![HF Space](https://img.shields.io/badge/🤗%20HF%20Space-credless--env-blue)](https://huggingface.co/spaces/your-username/credless-env)
-[![OpenEnv](https://img.shields.io/badge/OpenEnv-compliant-green)](https://github.com/meta-pytorch/OpenEnv)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
-
----
-
-## Motivation
-
-Traditional credit scoring excludes millions of people — students, gig workers,
-first-time earners — because they lack loan history. CredLess-Env trains agents
-to evaluate **behavioural financial signals** instead, making credit decisions
-more inclusive and explainable.
-
----
-
-## Environment Description
-
-The agent plays a loan officer. Each episode presents an applicant profile.
-The agent must assess the profile and decide: approve, deny, or assign a risk tier.
-In the hardest task, only partial information is shown and the agent must
-strategically request more data before deciding.
-
-The environment uses a trained Logistic Regression model as a ground-truth oracle
-to score every agent decision.
-
----
-
-## Action Space
-```json
-{
-  "action_type": "approve | deny | assign_tier | request_field",
-  "decision":    "approve | deny",
-  "tier":        "low_risk | medium_risk | high_risk",
-  "credit_limit": 75000.0,
-  "field_name":  "overdraft_count"
-}
+```text
+credless_env/
+├── data/
+│   ├── cd_updated.csv
+│   ├── dataset.jsonl
+│   └── synthetic_generator.py
+├── pipeline/
+│   ├── preprocessor.py
+│   ├── reasoning.py
+│   ├── scorer.py
+│   └── __init__.py
+├── server/
+│   ├── app.py
+│   ├── environment.py
+│   ├── graders.py
+│   ├── oracle.py
+│   └── data_generator.py
+├── credless_model/
+│   ├── dataset_pipeline.py
+│   ├── train.py
+│   └── model.pkl
+├── train.py
+├── inference.py
+├── models.py
+├── requirements.txt
+└── README.md
 ```
 
-| Field | Type | Used in |
-|---|---|---|
-| `action_type` | string | all actions |
-| `decision` | string | binary_decision, adaptive_inquiry |
-| `tier` | string | risk_tiering |
-| `credit_limit` | float (INR) | risk_tiering |
-| `field_name` | string | adaptive_inquiry (request_field) |
+## What Exists Now
 
----
+### FinVerse-compatible pieces
 
-## Observation Space
-```json
-{
-  "applicant_id":      "A3F9C1",
-  "revealed_fields":   {"transaction_activity": 0.82, "payment_consistency": 0.91, "...": "..."},
-  "hidden_fields":     ["digital_usage", "salary_consistency"],
-  "task_name":         "adaptive_inquiry",
-  "step_reward":       0.05,
-  "cumulative_reward": 0.10,
-  "done":              false,
-  "message":           "Revealed: 'account_age' = 48.2000",
-  "episode_score":     0.0
-}
-```
+- `pipeline/preprocessor.py`
+  - loads CSV data
+  - falls back to synthetic generation if no CSV is provided or the CSV is missing
+  - can write `data/dataset.jsonl`
+  - returns `(df_model, scaler)` for model training
+- `pipeline/oracle.py`
+  - deterministic oracle interface with:
+    - `decision`: `approve` / `reject`
+    - `risk_tier`: `A` / `B` / `C`
+    - `confidence`
+- `pipeline/reasoning.py`
+  - deterministic feature-grounded reasoning strings
+- `pipeline/scorer.py`
+  - weighted evaluation with normalization for:
+    - `approve/reject`
+    - `approve/deny`
+    - `A/B/C`
+    - `low_risk/medium_risk/high_risk`
+- `data/synthetic_generator.py`
+  - generates synthetic feature rows
+  - unlabeled by default
+  - only adds oracle-derived labels when `include_target=True`
+- `train.py`
+  - trains a compatibility model
+  - writes:
+    - `data/dataset.jsonl`
+    - `models/saved/finverse_model.pkl`
+    - `models/saved/model_meta.json`
+    - `models/saved/scaler.pkl`
 
-| Field | Description |
-|---|---|
-| `applicant_id` | Unique ID for this episode's applicant |
-| `revealed_fields` | Dict of visible feature name → float value |
-| `hidden_fields` | List of fields available to request (adaptive_inquiry only) |
-| `task_name` | Active task |
-| `step_reward` | Reward for this specific step |
-| `cumulative_reward` | Total reward so far this episode |
-| `done` | True when episode has ended |
-| `message` | Human-readable feedback from the environment |
-| `episode_score` | Final grader score 0.0–1.0 (populated when done=True) |
+### Existing environment pieces
 
-### Feature Definitions
+- `server/oracle.py`
+  - contains the environment oracle class
+  - also contains a deterministic raw-row helper `oracle_decision(...)`
+- `inference.py`
+  - currently runs the environment / agent loop
+  - it is not the standalone FinVerse end-to-end evaluation script from the draft pipeline layout
 
-| Feature | Range | Description |
-|---|---|---|
-| `transaction_activity` | 0–1 | Normalised transaction volume score |
-| `payment_consistency` | 0–1 | On-time payment ratio |
-| `account_stability` | 0–1 | Balance stability score |
-| `overdraft_count` | 0–20 | Overdraft events in last 12 months |
-| `digital_usage` | 0–1 | UPI / digital payment adoption ratio |
-| `salary_consistency` | 0–1 | Regularity of salary credits |
-| `failed_tx_ratio` | 0–0.5 | Failed transactions / total |
-| `account_age` | 1–120 months | Account age |
+## What Does Not Exist Yet
 
----
+These are still not fully implemented in the original draft shape:
 
-## Tasks
+- `models/trainer.py`
+- a standalone FinVerse-style `inference.py` that does:
+  - preprocess
+  - train/load model
+  - run predictions
+  - run oracle
+  - score model vs oracle
 
-| Task | Difficulty | Description | Grader |
-|---|---|---|---|
-| `binary_decision` | 🟢 Easy | Full profile shown. Approve or deny. | Binary 1.0 / 0.0 |
-| `risk_tiering` | 🟡 Medium | Assign tier + suggest credit limit in INR. | Tier accuracy 60% + limit error 40% |
-| `adaptive_inquiry` | 🔴 Hard | Partial profile. Request fields (3 free, −0.10 each after), then decide. | Correctness 70% + efficiency 30% |
+Those behaviors were partially implemented through compatibility files instead of a full package refactor.
 
----
+## Training
 
-## API Endpoints
+Install dependencies:
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/health` | GET | Returns `{"status":"healthy"}` |
-| `/reset` | POST | Start new episode. Body: `{"task_name":"binary_decision"}` |
-| `/step` | POST | Execute action. Body: CreditAction JSON |
-| `/state` | GET | Current episode metadata |
-| `/tasks` | GET | List all 3 tasks with action schemas |
-| `/grader` | GET | Current episode grader status |
-| `/baseline` | GET | Run baseline inference, return scores JSON |
-| `/docs` | GET | Interactive OpenAPI documentation |
-
----
-
-## Setup and Usage
-
-### Install
 ```bash
-pip install git+https://huggingface.co/spaces/your-username/credless-env
-```
-
-### Run locally
-```bash
-# 1. Clone and install
-git clone https://huggingface.co/spaces/your-username/credless-env
-cd credless-env
 pip install -r requirements.txt
+```
 
-# 2. Train the model
-python credless_model/train.py
+Run training:
 
-# 3. Start the server
+```bash
+python train.py
+python train.py --csv path/to/data.csv
+python train.py --csv path/to/data.csv --n_rows 12000
+python train.py --n_rows 500
+```
+
+Outputs:
+
+- `data/dataset.jsonl`
+- `models/saved/finverse_model.pkl`
+- `models/saved/model_meta.json`
+- `models/saved/scaler.pkl`
+
+Behavior:
+
+- CSV provided and found: train on real CSV
+- CSV provided and missing: synthetic fallback
+- no CSV provided: synthetic fallback
+- `--n_rows` controls synthetic fallback size
+
+Training labels are normalized to FinVerse approval semantics:
+  - `1 = approve`
+  - `0 = reject`
+
+## Preprocessing
+
+Example:
+
+```python
+from pipeline.preprocessor import load_and_preprocess
+
+df_model, scaler = load_and_preprocess(
+    csv_path=None,
+    output_jsonl="data/dataset.jsonl",
+)
+```
+
+Behavior:
+
+- `csv_path` exists: load that CSV
+- `csv_path` missing: warn and use synthetic fallback
+- no `csv_path`: use synthetic fallback
+
+If you want the bundled real dataset explicitly, pass `--csv data/cd_updated.csv`.
+
+## Synthetic Data
+
+Example:
+
+```python
+from data.synthetic_generator import generate_synthetic_data
+
+df = generate_synthetic_data(n_samples=1000)
+df_labeled = generate_synthetic_data(n_samples=1000, include_target=True)
+```
+
+Safety note:
+
+- unlabeled is the default to reduce oracle-label leakage
+- `include_target=True` is explicit because oracle-labeled synthetic data can make offline evaluation look artificially strong if misused
+
+## Scoring
+
+Example:
+
+```python
+from pipeline.scorer import evaluate_prediction
+
+score = evaluate_prediction(
+    pred={"decision": "approve", "risk_tier": "B", "confidence": 0.61},
+    oracle={"decision": "approve", "risk_tier": "A", "confidence": 0.71},
+)
+```
+
+Weights:
+
+- decision match: `0.60`
+- tier match / distance: `0.25`
+- confidence alignment: `0.15`
+
+## Environment
+
+Run the server:
+
+```bash
 uvicorn server.app:app --host 0.0.0.0 --port 7860 --reload
-
-# 4. Test it
-curl http://localhost:7860/health
-curl http://localhost:7860/tasks
 ```
 
-### Run with Docker
-```bash
-docker build -t credless-env:latest -f server/Dockerfile .
-docker run -d -p 7860:7860 \
-  -e OPENAI_API_KEY=sk-... \
-  -e HF_TOKEN=hf_... \
-  credless-env:latest
-```
+Run the current root inference client:
 
-### Run inference
 ```bash
-# Set env vars
-export API_BASE_URL=https://router.huggingface.co/v1
-export MODEL_NAME=meta-llama/Llama-3.1-8B-Instruct
-export HF_TOKEN=hf_...
-export ENV_BASE_URL=http://localhost:7860
-
 python inference.py
 ```
 
-### Validate OpenEnv spec
-```bash
-openenv validate
-```
+This `inference.py` is for the environment workflow, not the standalone FinVerse pipeline draft.
 
----
+## Important Accuracy Notes
 
-## Baseline Scores
+- The repo is now hybrid.
+- The compatibility layer is real and runnable.
+- The original draft README was not fully accurate for this codebase.
 
-Scores below were produced by `inference.py` against the live HF Space using
-`meta-llama/Llama-3.1-8B-Instruct` via the HF router.
+Specifically:
 
-| Task | Mean Score | Runs | Model |
-|---|---|---|---|
-| `binary_decision` | 0.00 | 1 | `meta-llama/Llama-3.1-8B-Instruct` |
-| `risk_tiering` | 0.30 | 1 | `meta-llama/Llama-3.1-8B-Instruct` |
-| `adaptive_inquiry` | 0.60 | 1 | `meta-llama/Llama-3.1-8B-Instruct` |
+- there is no `models/trainer.py`
+- root `inference.py` is not the draft pipeline runner
+- the repo remains hybrid: environment-first, with a working FinVerse compatibility layer added on top
 
----
-
-## Reward Function
-
-| Event | Reward |
-|---|---|
-| Valid field request (adaptive_inquiry) | +0.05 |
-| Invalid / unknown field name | −0.05 |
-| Duplicate field request | −0.10 |
-| Wrong task context for request | −0.05 |
-| Correct final decision | +1.0 (or partial for risk_tiering) |
-| Wrong final decision | 0.0 |
-| Episode timeout (≥12 steps) | −0.5 |
-
----
-
-## Project Structure
-```
-credless-env/
-├── inference.py           ← Main hackathon inference script
-├── baseline.py            ← Legacy baseline (kept for compatibility)
-├── models.py              ← Typed Action / Observation / State (Pydantic)
-├── client.py              ← OpenEnv WebSocket client
-├── openenv.yaml           ← OpenEnv metadata manifest
-├── pyproject.toml
-├── requirements.txt
-├── README.md
-├── .dockerignore
-├── credless_model/
-│   ├── train.py           ← Trains + saves model.pkl
-│   └── model.pkl          ← Saved Logistic Regression pipeline
-└── server/
-    ├── app.py             ← FastAPI server
-    ├── environment.py     ← RL episode logic
-    ├── oracle.py          ← CredLess model wrapper
-    ├── data_generator.py  ← Synthetic applicant generator
-    ├── graders.py         ← Task graders (deterministic, 0.0–1.0)
-    ├── tasks.py           ← Task registry
-    └── Dockerfile
-```
-
-## Reward Design Principles
-
-Reward shaping follows lessons from the OLMo3 technical report (Groeneveld et al., 2025):
-- Dense intermediate rewards prevent sparse-reward exploitation
-- Efficiency penalties discourage degenerate looping strategies  
-- Trajectory diversity is enforced via repetition penalties in adaptive_inquiry
-- Episode boundaries are hard-capped to prevent infinite rollouts
-## Custom Environment Design
-
-CredLess-Env is a fully custom OpenEnv environment built from scratch 
-using `openenv init credless_env`. It is not a wrapper around an 
-existing environment.
-
-Custom components:
-- **Oracle**: Trained ML model (XGBoost/RF) as ground-truth credit scorer
-- **Data generator**: Synthetic applicant profiles with real-world noise
-- **Graders**: Three deterministic task-specific scoring functions
-- **Reward shaping**: Dense trajectory-level signals (not sparse end-of-episode)
-- **Anti-exploitation**: Loop detection and repetition penalties
+If you want the repo to exactly match the original FinVerse folder contract, the next step is a deliberate refactor rather than more README changes.

@@ -1,99 +1,115 @@
-# server/graders.py
 """
-Deterministic graders for each task.
-All return float in [0.0, 1.0].
-These are the ground-truth scorers used by the /grader endpoint
-and reported as episode_score in the final observation.
+Reward and auditing helpers for the FinVerse investigation workflow.
 """
+
+from __future__ import annotations
+
+from typing import Any, Dict, List
 
 MIN_SCORE = 0.01
 MAX_SCORE = 0.99
+PROTECTED_TERMS = {
+    "religion",
+    "caste",
+    "gender",
+    "marital status",
+    "ethnicity",
+    "race",
+}
 
 
-def _strict_score(value: float) -> float:
+def strict_score(value: float) -> float:
     return round(min(MAX_SCORE, max(MIN_SCORE, float(value))), 4)
 
 
-def grade_binary_decision(
-    agent_decision: str,
-    oracle_decision: str,
-) -> float:
-    """
-    Easy task grader.
-    Full credit (1.0) for correct approve/deny, zero otherwise.
-    Completely deterministic — no partial credit.
-    """
-    raw = 1.0 if agent_decision.strip().lower() == oracle_decision.strip().lower() else 0.0
-    return _strict_score(raw)
+def _contains_any_reasoning_term(reasoning: str, values: List[str]) -> bool:
+    return any(value in reasoning for value in values)
 
 
-def grade_risk_tiering(
-    agent_tier: str,
-    oracle_tier: str,
-    agent_limit: float,
-    oracle_default_prob: float,
-) -> float:
-    """
-    Medium task grader.
-    60% weight → tier accuracy (full/partial/zero)
-    40% weight → credit limit reasonableness vs oracle probability
+def audit_terminal_action(
+    final_action: Dict[str, Any],
+    oracle_truth: Dict[str, Any],
+    revealed_fields: Dict[str, Dict[str, Any]],
+    market_visible: bool,
+    fraud_flags: List[str],
+) -> Dict[str, float]:
+    reasoning = str(final_action.get("reasoning") or "").strip().lower()
+    decision = str(final_action.get("decision") or "").strip().lower()
 
-    Tier scoring:
-        Exact match     → 1.0
-        Off by one tier → 0.5
-        Off by two tiers→ 0.0
-
-    Limit scoring:
-        Expected limit = (1 - default_prob) * 500_000 INR
-        Penalised by proportional deviation, capped at 0.
-    """
-    TIER_ORDER = {"low_risk": 0, "medium_risk": 1, "high_risk": 2}
-
-    agent_idx  = TIER_ORDER.get(agent_tier.strip().lower(),  -99)
-    oracle_idx = TIER_ORDER.get(oracle_tier.strip().lower(), -99)
-    diff       = abs(agent_idx - oracle_idx)
-
-    if diff == 0:
-        tier_score = 1.0
-    elif diff == 1:
-        tier_score = 0.5
-    else:
-        tier_score = 0.0
-
-    # Credit limit score
-    expected_limit = max(10_000.0, (1.0 - oracle_default_prob) * 500_000.0)
-    if expected_limit > 0:
-        proportional_error = abs(agent_limit - expected_limit) / expected_limit
-        limit_score = max(0.0, 1.0 - proportional_error)
-    else:
-        limit_score = 0.0
-
-    final = 0.6 * tier_score + 0.4 * limit_score
-    return _strict_score(final)
-
-
-def grade_adaptive_inquiry(
-    agent_decision: str,
-    oracle_decision: str,
-    n_fields_requested: int,
-    free_requests: int = 3,  
-    action_history: list = None, # requests before efficiency penalty starts
-) -> float:
-   
-    correctness = (
-        1.0 if agent_decision.strip().lower() == oracle_decision.strip().lower()
-        else 0.0
+    oracle_alignment = 1.0 if decision == str(oracle_truth.get("decision", "")).lower() else 0.15
+    evidence_terms = [field.lower() for field in revealed_fields]
+    evidence_hits = sum(
+        1 for field in evidence_terms if field in reasoning or field.replace("_", " ") in reasoning
     )
+    evidence_score = min(1.0, evidence_hits / max(2, len(evidence_terms) // 3 or 1))
+    market_score = 1.0 if (not market_visible or _contains_any_reasoning_term(reasoning, ["market", "rate", "inflation", "recession", "boom"])) else 0.45
+    fraud_score = 1.0 if (not fraud_flags or _contains_any_reasoning_term(reasoning, ["fraud", "confidence", "inconsistent", "verification"])) else 0.55
+    reasoning_score = 0.20 if len(reasoning) < 30 else min(1.0, 0.35 + evidence_score * 0.35 + market_score * 0.15 + fraud_score * 0.15)
 
-    over_budget = max(0, n_fields_requested - free_requests)
-    efficiency  = max(0.0, 1.0 - 0.10 * over_budget)
+    bias_penalty = 0.0
+    for term in PROTECTED_TERMS:
+        if term in reasoning:
+            bias_penalty += 0.35
 
-    repetition_penalty = 0.0
-    if action_history:          
-        unique_actions = len(set(str(a) for a in action_history))
-        total_actions  = len(action_history)
-        if total_actions > 2 and unique_actions / total_actions < 0.5:
-            repetition_penalty = 0.2   # agent is looping same actions
+    total = max(0.0, min(1.0, 0.65 * oracle_alignment + 0.35 * reasoning_score - bias_penalty))
+    return {
+        "score": round(total, 4),
+        "oracle_alignment": round(oracle_alignment, 4),
+        "reasoning_score": round(reasoning_score, 4),
+        "bias_penalty": round(bias_penalty, 4),
+    }
 
-    final = max(0.0, 0.7 * correctness + 0.3 * efficiency - repetition_penalty)
-    return _strict_score(final)
+
+def evaluate_terminal_action(
+    final_action: Dict[str, Any],
+    oracle_truth: Dict[str, Any],
+    auditor_result: Dict[str, float],
+    requests_made: int,
+    queried_market: bool,
+    fraud_flags: List[str],
+    applicant_is_fraudulent: bool,
+) -> Dict[str, float]:
+    action_type = str(final_action.get("action_type") or "").lower()
+    decision = str(final_action.get("decision") or action_type).lower()
+
+    if action_type == "escalate":
+        base_score = 0.35
+        reward = -0.5
+        return {
+            "task_score": round(base_score, 4),
+            "auditor_score": float(auditor_result.get("score", 0.0)),
+            "episode_score": strict_score(0.5 * base_score + 0.5 * float(auditor_result.get("score", 0.0))),
+            "reward": reward,
+            "efficiency_penalty": 0.0,
+            "fraud_bonus": 0.0,
+        }
+
+    accuracy = 1.0 if decision == str(oracle_truth.get("decision", "")).lower() else 0.0
+    tier_match = 1.0
+    if final_action.get("tier"):
+        tier_match = 1.0 if str(final_action.get("tier")).lower() == str(oracle_truth.get("tier", "")).lower() else 0.4
+
+    rate_penalty = 0.0
+    rate = final_action.get("rate")
+    expected_rate = final_action.get("expected_rate")
+    if isinstance(rate, (int, float)) and isinstance(expected_rate, (int, float)):
+        rate_penalty = min(0.25, abs(float(rate) - float(expected_rate)) / 20.0)
+
+    task_score = max(0.0, 0.75 * accuracy + 0.25 * tier_match - rate_penalty)
+    auditor_score = float(auditor_result.get("score", 0.0))
+
+    request_penalty = max(0, requests_made - 3) * 0.08
+    market_penalty = 0.05 if not queried_market else 0.0
+    fraud_bonus = 0.15 if fraud_flags and applicant_is_fraudulent else 0.0
+    false_alarm_penalty = 0.10 if fraud_flags and not applicant_is_fraudulent else 0.0
+
+    episode_score = strict_score(0.65 * task_score + 0.35 * auditor_score)
+    reward = round(episode_score - request_penalty - market_penalty + fraud_bonus - false_alarm_penalty, 4)
+    return {
+        "task_score": round(task_score, 4),
+        "auditor_score": round(auditor_score, 4),
+        "episode_score": episode_score,
+        "reward": reward,
+        "efficiency_penalty": round(request_penalty + market_penalty + false_alarm_penalty, 4),
+        "fraud_bonus": round(fraud_bonus, 4),
+    }

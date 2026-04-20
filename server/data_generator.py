@@ -1,187 +1,195 @@
-# server/data_generator.py
 """
-Generates synthetic applicant profiles for each episode.
+Dataset-backed applicant generation aligned to the trained 20-feature schema.
 
-The original version sampled every feature independently from a uniform range.
-That made applicants unrealistically random and easy to game with a hand-built
-rule that approximated the oracle. This version produces correlated features
-from a few latent behavioural factors so profiles look more realistic and the
-answer is less directly recoverable from a simple shortcut.
+The environment now samples real rows from the cleaned CSV and uses the
+engineered features produced by `credless_model.dataset_pipeline`. That keeps
+the observation space, oracle inputs, and reward logic on the same feature set.
 """
+
+from __future__ import annotations
+
 import uuid
+from typing import Dict, List, Optional
+
 import numpy as np
-import random
-from typing import Dict, Optional
 
-# Feature name -> (min, max) for uniform sampling
-FIELD_RANGES: Dict[str, tuple] = {
-    "transaction_activity":  (0.0,  1.0),   # normalised tx count score
-    "payment_consistency":   (0.0,  1.0),   # on-time payment ratio
-    "account_stability":     (0.0,  1.0),   # balance stability score
-    "overdraft_count":       (0.0, 20.0),   # raw count in last 12 months
-    "digital_usage":         (0.0,  1.0),   # UPI/digital payment ratio
-    "salary_consistency":    (0.0,  1.0),   # salary credit regularity score
-    "failed_tx_ratio":       (0.0,  0.5),   # failed / total transactions
-    "account_age":           (1.0, 120.0),  # months
+from credless_model.dataset_pipeline import FEATURE_NAMES, load_dataset_cache
+
+FIELD_NAMES: List[str] = list(FEATURE_NAMES)
+DEFAULT_VISIBLE_FIELDS = [
+    "payment_reliability",
+    "transaction_health",
+    "income_capacity_score",
+    "employment_stability",
+    "account_maturity",
+    "location_risk_index",
+]
+DIFFICULTY_PARTIALS = {
+    "easy": 4,
+    "medium": 6,
+    "hard": 8,
 }
-
-# First 4 shown at episode start for adaptive_inquiry task
-ALWAYS_VISIBLE = [
-    "transaction_activity",
-    "payment_consistency",
-    "account_stability",
-    "overdraft_count",
+ADVERSARIAL_TARGETS = [
+    "income_capacity_score",
+    "net_worth_score",
+    "payment_reliability",
 ]
-
-# Last 4 must be requested in adaptive_inquiry task
-HIDDEN_INITIALLY = [
-    "digital_usage",
-    "salary_consistency",
-    "failed_tx_ratio",
-    "account_age",
+WITHHOLD_TARGETS = [
+    "overdraft_risk",
+    "medical_stress_score",
+    "total_delinquency_score",
+    "real_estate_exposure",
 ]
+CONFIDENCE_SENSITIVE_FIELDS = set(ADVERSARIAL_TARGETS + WITHHOLD_TARGETS)
 
 
-def _clip(value: float, lo: float, hi: float) -> float:
+def _dataset_features():
+    return load_dataset_cache()["features"]
+
+
+def _dataset_cleaned():
+    return load_dataset_cache()["cleaned"]
+
+
+def _build_field_ranges() -> Dict[str, tuple]:
+    features = _dataset_features()
+    ranges: Dict[str, tuple] = {}
+    for field in FIELD_NAMES:
+        column = features[field].astype(float)
+        ranges[field] = (float(column.min()), float(column.max()))
+    return ranges
+
+
+FIELD_RANGES: Dict[str, tuple] = _build_field_ranges()
+
+
+def _clip_to_range(field: str, value: float) -> float:
+    lo, hi = FIELD_RANGES[field]
     return float(np.clip(value, lo, hi))
 
 
-def _beta_scaled(rng: np.random.Generator, lo: float, hi: float, a: float, b: float) -> float:
-    return float(lo + (hi - lo) * rng.beta(a, b))
+def _difficulty_to_adversarial_prob(difficulty: str) -> float:
+    if difficulty == "hard":
+        return 0.8
+    if difficulty == "medium":
+        return 0.35
+    return 0.1
 
 
-def add_real_world_noise(features: dict, seed: int = None) -> dict:
-    """
-    Simulate real-world data quality issues:
-    1. Missing data (some fields occasionally unavailable)
-    2. Noisy measurements (sensor/reporting errors)
-    3. Seasonal effects (account age behaves differently in certain months)
-    """
-    rng = random.Random(seed)
-    noisy = features.copy()
-
-    # 1. Data availability noise — 15% chance any field is stale/estimated
-    for field in ["digital_usage", "salary_consistency"]:
-        if rng.random() < 0.15:
-            noisy[field] = round(noisy[field] * rng.uniform(0.85, 1.15), 4)
-
-    # 2. Overdraft count reporting lag — sometimes undercounted
-    if rng.random() < 0.10:
-        noisy["overdraft_count"] = max(0, noisy["overdraft_count"] - rng.randint(1, 3))
-
-    # 3. Failed transaction ratio spikes — economic stress events
-    if rng.random() < 0.08:
-        noisy["failed_tx_ratio"] = min(0.5, noisy["failed_tx_ratio"] + 0.1)
-
-    return noisy
-
-
-def generate_applicant(seed: Optional[int] = None) -> Dict:
-    """
-    Returns a dict:
-        {
-            "applicant_id": str,
-            "features":     {field_name: float, ...},
-            "data_quality": str
-        }
-    """
+def _sample_row(seed: Optional[int]) -> Dict[str, object]:
     rng = np.random.default_rng(seed)
-    applicant_id = str(uuid.uuid4())[:8].upper()
-
-    # Shared latent traits create realistic cross-feature relationships.
-    reliability = rng.beta(4.2, 2.0)          # higher = steadier repayment behaviour
-    liquidity = rng.beta(3.6, 2.4)            # higher = stronger cash-flow buffer
-    digital_affinity = rng.beta(3.0, 2.2)     # higher = more digital usage
-    volatility = rng.beta(2.1, 4.0)           # higher = noisier / less stable behaviour
-
-    account_age = _clip(
-        6.0 + 104.0 * (0.55 * reliability + 0.25 * liquidity + 0.20 * rng.random()),
-        *FIELD_RANGES["account_age"],
-    )
-
-    payment_consistency = _clip(
-        0.18
-        + 0.54 * reliability
-        + 0.14 * liquidity
-        - 0.22 * volatility
-        + rng.normal(0.0, 0.06),
-        *FIELD_RANGES["payment_consistency"],
-    )
-
-    salary_consistency = _clip(
-        0.10
-        + 0.52 * reliability
-        + 0.24 * liquidity
-        - 0.16 * volatility
-        + 0.06 * np.tanh((account_age - 24.0) / 36.0)
-        + rng.normal(0.0, 0.07),
-        *FIELD_RANGES["salary_consistency"],
-    )
-
-    account_stability = _clip(
-        0.12
-        + 0.38 * liquidity
-        + 0.24 * reliability
-        - 0.18 * volatility
-        + 0.10 * salary_consistency
-        + rng.normal(0.0, 0.06),
-        *FIELD_RANGES["account_stability"],
-    )
-
-    digital_usage = _clip(
-        0.06
-        + 0.60 * digital_affinity
-        + 0.12 * reliability
-        + 0.08 * np.tanh((account_age - 12.0) / 30.0)
-        + rng.normal(0.0, 0.08),
-        *FIELD_RANGES["digital_usage"],
-    )
-
-    transaction_activity = _clip(
-        0.08
-        + 0.32 * digital_usage
-        + 0.18 * liquidity
-        + 0.18 * reliability
-        + 0.10 * _beta_scaled(rng, 0.0, 1.0, 2.5, 2.2)
-        - 0.08 * volatility
-        + rng.normal(0.0, 0.07),
-        *FIELD_RANGES["transaction_activity"],
-    )
-
-    overdraft_count = _clip(
-        1.0
-        + 12.5 * (1.0 - liquidity)
-        + 4.5 * volatility
-        + 2.5 * (1.0 - payment_consistency)
-        + rng.normal(0.0, 1.8),
-        *FIELD_RANGES["overdraft_count"],
-    )
-
-    failed_tx_ratio = _clip(
-        0.03
-        + 0.14 * volatility
-        + 0.08 * (1.0 - digital_usage)
-        + 0.05 * (overdraft_count / FIELD_RANGES["overdraft_count"][1])
-        + rng.normal(0.0, 0.025),
-        *FIELD_RANGES["failed_tx_ratio"],
-    )
-
-    features = {
-        "transaction_activity": transaction_activity,
-        "payment_consistency": payment_consistency,
-        "account_stability": account_stability,
-        "overdraft_count": overdraft_count,
-        "digital_usage": digital_usage,
-        "salary_consistency": salary_consistency,
-        "failed_tx_ratio": failed_tx_ratio,
-        "account_age": account_age,
+    features = _dataset_features()
+    cleaned = _dataset_cleaned()
+    idx = int(rng.integers(0, len(features)))
+    return {
+        "feature_row": features.iloc[idx].astype(float).to_dict(),
+        "raw_row": cleaned.iloc[idx].to_dict(),
     }
 
-    # Apply real-world noise on top of correlated features
-    features = add_real_world_noise(features, seed=seed)
+
+def _apply_observation_noise(features: Dict[str, float], rng: np.random.Generator) -> Dict[str, float]:
+    presented = dict(features)
+    for field in FIELD_NAMES:
+        if rng.random() < 0.12:
+            presented[field] = _clip_to_range(
+                field,
+                presented[field] * float(rng.uniform(0.92, 1.08)),
+            )
+    return presented
+
+
+def _apply_applicant_behavior(
+    true_features: Dict[str, float],
+    difficulty: str,
+    rng: np.random.Generator,
+) -> Dict[str, object]:
+    presented = _apply_observation_noise(true_features, rng)
+    confidence = {
+        field: round(float(rng.uniform(0.72, 0.98)), 3)
+        for field in FIELD_NAMES
+    }
+    fabricated_fields: List[str] = []
+    withheld_fields: List[str] = []
+
+    is_adversarial = rng.random() < _difficulty_to_adversarial_prob(difficulty)
+    behavior = "adversarial" if is_adversarial else "honest"
+
+    if is_adversarial:
+        for field in ADVERSARIAL_TARGETS:
+            presented[field] = _clip_to_range(
+                field,
+                presented[field] + float(rng.uniform(0.05, 0.14)),
+            )
+            confidence[field] = round(float(rng.uniform(0.38, 0.65)), 3)
+            fabricated_fields.append(field)
+
+        hidden_candidates = [field for field in WITHHOLD_TARGETS if field in FIELD_NAMES]
+        withheld_fields.extend(hidden_candidates[: int(rng.integers(2, min(4, len(hidden_candidates)) + 1))])
+        for field in withheld_fields:
+            confidence[field] = round(float(rng.uniform(0.35, 0.60)), 3)
 
     return {
-        "applicant_id": applicant_id,
-        "features":     features,
-        "data_quality": "noisy",
+        "presented_features": presented,
+        "confidence": confidence,
+        "withheld_fields": sorted(set(withheld_fields)),
+        "fabricated_fields": sorted(set(fabricated_fields)),
+        "behavior": behavior,
+        "is_adversarial": is_adversarial,
+    }
+
+
+def _select_hidden_fields(
+    difficulty: str,
+    rng: np.random.Generator,
+    mandatory_hidden: Optional[List[str]] = None,
+) -> List[str]:
+    hidden_count = DIFFICULTY_PARTIALS.get(difficulty, 6)
+    mandatory_hidden = list(dict.fromkeys(mandatory_hidden or []))
+    remaining = [field for field in FIELD_NAMES if field not in mandatory_hidden]
+    extra_needed = max(0, hidden_count - len(mandatory_hidden))
+    sampled = list(rng.choice(remaining, size=extra_needed, replace=False)) if extra_needed else []
+    return sorted(set(mandatory_hidden + sampled))
+
+
+def generate_applicant(seed: Optional[int] = None, difficulty: str = "easy") -> Dict[str, object]:
+    rng = np.random.default_rng(seed)
+    sample = _sample_row(seed)
+    true_features = sample["feature_row"]
+    raw_row = sample["raw_row"]
+    behavior = _apply_applicant_behavior(true_features, difficulty, rng)
+    hidden_fields = _select_hidden_fields(
+        difficulty=difficulty,
+        rng=rng,
+        mandatory_hidden=behavior["withheld_fields"],
+    )
+
+    visible_fields = [field for field in DEFAULT_VISIBLE_FIELDS if field not in hidden_fields]
+    if len(visible_fields) < 4:
+        for field in FIELD_NAMES:
+            if field not in hidden_fields and field not in visible_fields:
+                visible_fields.append(field)
+            if len(visible_fields) >= 4:
+                break
+
+    uncertainty_flags = {
+        field: round(1.0 - behavior["confidence"][field], 3)
+        for field in FIELD_NAMES
+    }
+    data_quality = "adversarial" if behavior["is_adversarial"] else "observed_with_noise"
+
+    return {
+        "applicant_id": str(uuid.uuid4())[:8].upper(),
+        "features": true_features,
+        "presented_features": behavior["presented_features"],
+        "field_confidence": behavior["confidence"],
+        "uncertainty_flags": uncertainty_flags,
+        "hidden_fields": hidden_fields,
+        "visible_fields": sorted(set(visible_fields)),
+        "data_quality": data_quality,
+        "applicant_behavior": behavior["behavior"],
+        "is_adversarial": behavior["is_adversarial"],
+        "fabricated_fields": behavior["fabricated_fields"],
+        "withheld_fields": behavior["withheld_fields"],
+        "raw_row": raw_row,
+        "source": "dataset_sample",
     }

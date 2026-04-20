@@ -1,44 +1,67 @@
-# models.py
 from __future__ import annotations
-from typing import Dict, List, Optional
-from pydantic import BaseModel, Field
+
+from typing import Any, Dict, List, Literal, Optional
+
 from openenv.core.env_server.types import Action, Observation
+from pydantic import BaseModel, Field
 
 
-class CreditAction(Action):
-    action_type:   str            = Field("approve")
-    field_name:    Optional[str]  = Field(None)
-    decision:      Optional[str]  = Field(None)
-    tier:          Optional[str]  = Field(None)
-    credit_limit:  Optional[float]= Field(None)
+TerminalAction = Literal["approve", "deny", "escalate"]
+FinVerseActionType = Literal[
+    "request_info",
+    "query_market",
+    "flag_fraud",
+    "approve",
+    "deny",
+    "escalate",
+]
 
 
-class CreditObservation(Observation):
-    applicant_id:      str              = Field("")
-    revealed_fields:   Dict[str, float] = Field(default_factory=dict)
-    hidden_fields:     List[str]        = Field(default_factory=list)
-    task_name:         str              = Field("")
-    step_reward:       float            = Field(0.0)
-    cumulative_reward: float            = Field(0.0)
-    done:              bool             = Field(False)
-    message:           str              = Field("")
-    episode_score:     float            = Field(0.0)
+class FinVerseAction(Action):
+    action_type: FinVerseActionType
+    params: Dict[str, Any] = Field(default_factory=dict)
+    reasoning: str = Field(default="")
 
 
-# ✅ NEW: Required by OpenEnv spec
-class CreditReward(BaseModel):
-    value:  float = Field(0.0,  description="Scalar reward for this step")
-    reason: str   = Field("",   description="Human-readable reward explanation")
+class FinVerseObservation(Observation):
+    applicant: Dict[str, Any] = Field(default_factory=dict)
+    conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
+    market_visible: bool = Field(default=False)
+    market_state: Optional[Dict[str, Any]] = Field(default=None)
+    current_policy: Dict[str, Any] = Field(default_factory=dict)
+    compliance_history: List[float] = Field(default_factory=list)
+    step: int = Field(default=0)
+    max_steps: int = Field(default=8)
+    fraud_flags_raised: List[str] = Field(default_factory=list)
+    step_reward: float = Field(default=0.0)
+    cumulative_reward: float = Field(default=0.0)
+    done: bool = Field(default=False)
+    message: str = Field(default="")
+    episode_score: float = Field(default=0.0)
+    task_name: str = Field(default="binary_decision")
 
 
-# ✅ FIXED: Now a Pydantic model so FastAPI can serialize it
-class CreditState(BaseModel):
-    episode_id:            str       = Field("")
-    task_name:             str       = Field("binary_decision")
-    step_count:            int       = Field(0)
-    fields_requested:      List[str] = Field(default_factory=list)
-    cumulative_reward:     float     = Field(0.0)
-    ground_truth_tier:     str       = Field("")
-    ground_truth_decision: str       = Field("")
-    ground_truth_prob:     float     = Field(0.0)
-    trajectory_length:     int       = Field(0)
+class FinVerseReward(BaseModel):
+    value: float = Field(default=0.0, description="Scalar reward for this step")
+    reason: str = Field(default="", description="Human-readable reward explanation")
+
+
+class FinVerseState(BaseModel):
+    session_id: str = Field(default="")
+    episode_id: str = Field(default="")
+    task_difficulty: Literal["easy", "medium", "hard"] = Field(default="easy")
+    applicant_ground_truth: Dict[str, Any] = Field(default_factory=dict)
+    applicant_is_fraudulent: bool = Field(default=False)
+    market_state: Dict[str, Any] = Field(default_factory=dict)
+    conversation: List[Dict[str, Any]] = Field(default_factory=list)
+    fraud_flags: List[str] = Field(default_factory=list)
+    steps_taken: int = Field(default=0)
+    auditor_compliance_log: List[float] = Field(default_factory=list)
+    episode_count: int = Field(default=0)
+
+
+# Compatibility aliases for existing imports.
+CreditAction = FinVerseAction
+CreditObservation = FinVerseObservation
+CreditReward = FinVerseReward
+CreditState = FinVerseState

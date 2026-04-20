@@ -1,27 +1,22 @@
-# server/app.py
 import json
 import os
 import subprocess
-import sys
-import os
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 
-from models import CreditAction, CreditObservation
-from .environment import CreditAnalystEnvironment    # ✅ relative import
-from .tasks import TASK_REGISTRY                     # ✅ relative import
-from .data_generator import FIELD_RANGES             # ✅ relative import
-
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from models import FinVerseAction
+from .environment import CreditAnalystEnvironment
+from .tasks import TASK_REGISTRY
 
 env = CreditAnalystEnvironment()
 
 app = FastAPI(
     title="CredLess-Env",
     description="OpenEnv RL environment for alternative credit scoring.",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 
@@ -39,33 +34,33 @@ def health():
 def reset(body: ResetRequest = ResetRequest()):
     obs = env.reset(task_name=body.task_name, seed=body.seed)
     return {
-        "observation": obs.dict(),
-        "reward": 0.0,          # ✅ top-level reward
-        "done": False,          # ✅ top-level done
-        "info": {"task_name": obs.task_name},  # ✅ required info
+        "observation": obs.model_dump(),
+        "reward": 0.0,
+        "done": False,
+        "info": {"task_name": obs.task_name},
     }
 
 
 @app.post("/step")
-def step(action: CreditAction):
+def step(action: FinVerseAction):
     obs = env.step(action)
     return {
-        "observation": obs.dict(),
-        "reward": obs.step_reward,          # ✅ top-level reward
-        "done": obs.done,                   # ✅ top-level done
-        "info": {                           # ✅ required info dict
-            "task_name":         obs.task_name,
+        "observation": obs.model_dump(),
+        "reward": obs.step_reward,
+        "done": obs.done,
+        "info": {
+            "task_name": obs.task_name,
             "cumulative_reward": obs.cumulative_reward,
-            "episode_score":     obs.episode_score,
+            "episode_score": obs.episode_score,
+            "market_visible": obs.market_visible,
+            "fraud_flags_raised": obs.fraud_flags_raised,
         },
     }
 
 
-# server/app.py — state endpoint (remove .state, call .state())
-
 @app.get("/state")
 def state():
-    return env.state().dict()    # ✅ call as method, not property
+    return env.state().model_dump()
 
 
 @app.get("/tasks")
@@ -77,27 +72,25 @@ def list_tasks():
 def grader_info():
     s = env.state()
     return {
-        "episode_id":        s.episode_id,
-        "task_name":         s.task_name,
-        "steps_taken":       s.step_count,
-        "cumulative_reward": round(s.cumulative_reward, 4),
-        "fields_requested":  s.fields_requested,
-        "note":              "episode_score is in the observation when done=True",
+        "episode_id": s.episode_id,
+        "session_id": s.session_id,
+        "task_difficulty": s.task_difficulty,
+        "steps_taken": s.steps_taken,
+        "fraud_flags": s.fraud_flags,
+        "market_state_visible": bool(s.market_state),
+        "auditor_history_length": len(s.auditor_compliance_log),
+        "note": "episode_score is returned in the observation when done=True",
     }
 
 
 @app.get("/baseline")
 def run_baseline():
-    # ✅ Guard: check API key before launching
-    if not os.getenv("OPENAI_API_KEY"):
-        return JSONResponse(
-            status_code=400,
-            content={"error": "OPENAI_API_KEY environment variable not set"},
-        )
     try:
         result = subprocess.run(
             ["python", "baseline.py", "--output-json"],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
         scores = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -107,15 +100,18 @@ def run_baseline():
     except Exception as exc:
         scores = {"error": str(exc)}
     return JSONResponse(content=scores)
+
+
 def main():
     import uvicorn
-    import os
+
     uvicorn.run(
         "server.app:app",
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", 7860)),
-        workers=int(os.getenv("WORKERS", 2))
+        workers=int(os.getenv("WORKERS", 2)),
     )
+
 
 if __name__ == "__main__":
     main()

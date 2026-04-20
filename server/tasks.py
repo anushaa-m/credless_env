@@ -1,63 +1,62 @@
-# server/tasks.py
 """
-Task registry — single source of truth for task metadata.
-Consumed by /tasks endpoint and environment validation.
+Task registry for the FinVerse investigation workflow.
 """
+
 from .data_generator import FIELD_RANGES
+
+PIPELINE_DESCRIPTION = (
+    "Each episode is a stateful lending investigation. The agent can request additional "
+    "applicant fields, reveal market conditions, raise fraud flags, and must finish with "
+    "approve, deny, or escalate plus reasoning."
+)
 
 TASK_REGISTRY = [
     {
-        "name":        "binary_decision",
-        "difficulty":  "easy",
-        "description": (
-            "The full applicant profile (all 8 features) is provided. "
-            "The agent must approve or deny the loan in a single action. "
-            "Grader: binary correct/incorrect (0.0 or 1.0)."
-        ),
-        "max_steps":   2,
-        "action_schema": {
-            "action_type": "approve | deny",
-            "decision":    "approve | deny",
-        },
-    },
-    {
-        "name":        "risk_tiering",
-        "difficulty":  "medium",
-        "description": (
-            "Full profile provided. The agent must assign a risk tier AND "
-            "suggest a credit limit in INR in a single action. "
-            "Grader: tier accuracy (60%) + limit reasonableness (40%)."
-        ),
-        "max_steps":   2,
-        "action_schema": {
-            "action_type":  "assign_tier",
-            "tier":         "low_risk | medium_risk | high_risk",
-            "credit_limit": "float in INR (e.g. 75000.0)",
-        },
-    },
-    {
-        "name":        "adaptive_inquiry",
-        "difficulty":  "hard",
-        "description": (
-            "Only 4 of 8 features are shown initially. The agent may request "
-            "additional fields (penalised per extra request beyond 3 free), "
-            "then must issue an approve/deny decision. "
-            "Grader: correctness (70%) + inquiry efficiency (30%)."
-        ),
-        "max_steps":   12,
-        "free_requests": 3,
+        "name": "binary_decision",
+        "difficulty": "easy",
+        "description": f"{PIPELINE_DESCRIPTION} Focus on correct approve or deny outcomes.",
+        "max_steps": 8,
         "available_fields": list(FIELD_RANGES.keys()),
         "action_schema": {
-            "step_1_to_N": {
-                "action_type": "request_field",
-                "field_name":  f"one of {list(FIELD_RANGES.keys())}",
-            },
-            "final_step": {
-                "action_type": "approve | deny",
-                "decision":    "approve | deny",
-            },
+            "request_info": {"action_type": "request_info", "params": {"field": f"one of {list(FIELD_RANGES.keys())}"}},
+            "query_market": {"action_type": "query_market", "params": {}},
+            "flag_fraud": {"action_type": "flag_fraud", "params": {"reason": "string"}},
+            "approve": {"action_type": "approve", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
+            "deny": {"action_type": "deny", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
+            "escalate": {"action_type": "escalate", "params": {"review_note": "optional"}, "reasoning": "string"},
+        },
+    },
+    {
+        "name": "risk_tiering",
+        "difficulty": "medium",
+        "description": f"{PIPELINE_DESCRIPTION} Pricing and tier selection matter more heavily.",
+        "max_steps": 8,
+        "available_fields": list(FIELD_RANGES.keys()),
+        "action_schema": {
+            "request_info": {"action_type": "request_info", "params": {"field": f"one of {list(FIELD_RANGES.keys())}"}},
+            "query_market": {"action_type": "query_market", "params": {}},
+            "flag_fraud": {"action_type": "flag_fraud", "params": {"reason": "string"}},
+            "approve": {"action_type": "approve", "params": {"tier": "low_risk | medium_risk | high_risk", "rate": "float"}, "reasoning": "string"},
+            "deny": {"action_type": "deny", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
+            "escalate": {"action_type": "escalate", "params": {"review_note": "optional"}, "reasoning": "string"},
+        },
+    },
+    {
+        "name": "adaptive_inquiry",
+        "difficulty": "hard",
+        "description": f"{PIPELINE_DESCRIPTION} Fraud detection and long-horizon evidence gathering matter most.",
+        "max_steps": 8,
+        "available_fields": list(FIELD_RANGES.keys()),
+        "action_schema": {
+            "request_info": {"action_type": "request_info", "params": {"field": f"one of {list(FIELD_RANGES.keys())}"}},
+            "query_market": {"action_type": "query_market", "params": {}},
+            "flag_fraud": {"action_type": "flag_fraud", "params": {"reason": "string"}},
+            "approve": {"action_type": "approve", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
+            "deny": {"action_type": "deny", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
+            "escalate": {"action_type": "escalate", "params": {"review_note": "optional"}, "reasoning": "string"},
         },
     },
 ]
 
 TASK_NAMES = [t["name"] for t in TASK_REGISTRY]
+TASK_DIFFICULTY = {t["name"]: t["difficulty"] for t in TASK_REGISTRY}
