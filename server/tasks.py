@@ -5,9 +5,8 @@ Task registry for the FinVerse investigation workflow.
 from .data_generator import FIELD_RANGES
 
 PIPELINE_DESCRIPTION = (
-    "Each episode is a stateful lending investigation. The agent can request additional "
-    "applicant fields, reveal market conditions, raise fraud flags, and must finish with "
-    "approve, deny, or escalate plus reasoning."
+    "Each episode is a deterministic binary credit decision task. "
+    "The agent must return exactly one uppercase string: APPROVE or REJECT."
 )
 
 TASK_REGISTRY = [
@@ -18,12 +17,7 @@ TASK_REGISTRY = [
         "max_steps": 8,
         "available_fields": list(FIELD_RANGES.keys()),
         "action_schema": {
-            "request_info": {"action_type": "request_info", "params": {"field": f"one of {list(FIELD_RANGES.keys())}"}},
-            "query_market": {"action_type": "query_market", "params": {}},
-            "flag_fraud": {"action_type": "flag_fraud", "params": {"reason": "string"}},
-            "approve": {"action_type": "approve", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
-            "deny": {"action_type": "deny", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
-            "escalate": {"action_type": "escalate", "params": {"review_note": "optional"}, "reasoning": "string"},
+            "input": "APPROVE | REJECT",
         },
     },
     {
@@ -33,12 +27,7 @@ TASK_REGISTRY = [
         "max_steps": 8,
         "available_fields": list(FIELD_RANGES.keys()),
         "action_schema": {
-            "request_info": {"action_type": "request_info", "params": {"field": f"one of {list(FIELD_RANGES.keys())}"}},
-            "query_market": {"action_type": "query_market", "params": {}},
-            "flag_fraud": {"action_type": "flag_fraud", "params": {"reason": "string"}},
-            "approve": {"action_type": "approve", "params": {"tier": "low_risk | medium_risk | high_risk", "rate": "float"}, "reasoning": "string"},
-            "deny": {"action_type": "deny", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
-            "escalate": {"action_type": "escalate", "params": {"review_note": "optional"}, "reasoning": "string"},
+            "input": "APPROVE | REJECT",
         },
     },
     {
@@ -48,12 +37,7 @@ TASK_REGISTRY = [
         "max_steps": 8,
         "available_fields": list(FIELD_RANGES.keys()),
         "action_schema": {
-            "request_info": {"action_type": "request_info", "params": {"field": f"one of {list(FIELD_RANGES.keys())}"}},
-            "query_market": {"action_type": "query_market", "params": {}},
-            "flag_fraud": {"action_type": "flag_fraud", "params": {"reason": "string"}},
-            "approve": {"action_type": "approve", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
-            "deny": {"action_type": "deny", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
-            "escalate": {"action_type": "escalate", "params": {"review_note": "optional"}, "reasoning": "string"},
+            "input": "APPROVE | REJECT",
         },
     },
 ]

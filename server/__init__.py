@@ -1,5 +1,5 @@
 # __init__.py
-from models import FinVerseAction, FinVerseObservation
+from models import FinVerseObservation
 from client import CreditEnv
 
-__all__ = ["CreditEnv", "FinVerseAction", "FinVerseObservation"]
+__all__ = ["CreditEnv", "FinVerseObservation"]

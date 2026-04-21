@@ -140,7 +140,7 @@ class CredLessOracle:
             adjusted[field] = float(np.clip(adjusted[field] * float(multiplier), lo, hi))
         return adjusted
 
-    def predict(self, features: Dict[str, float], market_condition: str = "Stable Credit") -> Dict[str, object]:
+    def predict_risk(self, features: Dict[str, float], market_condition: str = "Stable Credit") -> float:
         config = MARKET_SCENARIOS.get(market_condition, MARKET_SCENARIOS["Stable Credit"])
         adjusted_features = self._apply_market_adjustments(features, market_condition)
 
@@ -156,7 +156,11 @@ class CredLessOracle:
                     self._warned_legacy_fallback = True
                 prob = self._legacy_default_prob(adjusted_features)
 
-        prob = float(np.clip(prob * float(config["risk_multiplier"]), 0.0, 1.0))
+        return float(np.clip(prob * float(config["risk_multiplier"]), 0.0, 1.0))
+
+    def predict(self, features: Dict[str, float], market_condition: str = "Stable Credit") -> Dict[str, object]:
+        config = MARKET_SCENARIOS.get(market_condition, MARKET_SCENARIOS["Stable Credit"])
+        prob = self.predict_risk(features, market_condition=market_condition)
         low_thresh = _clamp_threshold(self.low_thresh + float(config["threshold_delta"]))
         high_thresh = _clamp_threshold(self.high_thresh + float(config["threshold_delta"]), lo=low_thresh + 0.05)
 

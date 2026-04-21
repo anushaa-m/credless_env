@@ -7,9 +7,7 @@ It is designed to stay compatible with future OpenEnv wrapping.
 Key points:
   - root `inference.py` remains the standalone FinVerse pipeline entrypoint
   - this file owns environment interaction only
-  - terminal credit decisions use pipeline oracle thresholds / labels
-  - pipeline scorer is used for local alignment checks without duplicating
-    decision-vs-tier scoring logic
+  - environment actions are plain uppercase strings: APPROVE or REJECT
 """
 
 from __future__ import annotations
@@ -22,9 +20,6 @@ from typing import Dict, List, Optional
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
-
-from pipeline.oracle import score_to_prediction
-from pipeline.scorer import evaluate_prediction
 
 load_dotenv()
 
@@ -52,10 +47,8 @@ REQUEST_PRIORITY = [
 ]
 
 SYSTEM_PROMPT = (
-    "You are a lending analyst in a stateful investigation environment. "
-    "Return exactly one valid JSON action object and nothing else. "
-    "Valid action_type values are request_info, query_market, flag_fraud, approve, deny, and escalate. "
-    "Non-terminal actions can leave reasoning empty. Terminal actions must include reasoning."
+    "You are a binary credit decision agent. "
+    "Return exactly one token: APPROVE or REJECT."
 )
 
 client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN) if HF_TOKEN else None
@@ -83,34 +76,6 @@ def profile_confidence(observation: Dict[str, object]) -> Dict[str, float]:
     return {field: float(payload.get("confidence", 0.0)) for field, payload in profile.items()}
 
 
-def _hidden_request_target(observation: Dict[str, object]) -> Optional[str]:
-    hidden = observation.get("applicant", {}).get("missing_fields", [])
-    for field in REQUEST_PRIORITY:
-        if field in hidden:
-            return field
-    return hidden[0] if hidden else None
-
-
-def _detect_fraud_signal(observation: Dict[str, object]) -> bool:
-    fields = profile_values(observation)
-    confidence = profile_confidence(observation)
-    low_conf = {field: 1.0 - value for field, value in confidence.items()}
-    suspicious_income = (
-        fields.get("income_capacity_score", 0.0) > 0.82
-        and low_conf.get("income_capacity_score", 0.0) > 0.28
-    )
-    suspicious_wealth = (
-        fields.get("net_worth_score", 0.0) > 0.80
-        and low_conf.get("net_worth_score", 0.0) > 0.28
-    )
-    suspicious_clean_profile = (
-        fields.get("payment_reliability", 0.0) > 0.88
-        and fields.get("overdraft_risk", 0.0) < 0.10
-        and low_conf.get("payment_reliability", 0.0) > 0.25
-    )
-    return bool(suspicious_income or suspicious_wealth or suspicious_clean_profile)
-
-
 def _estimate_default_risk(fields: Dict[str, float], market_index: float) -> float:
     risk = (
         0.16 * fields.get("revolving_utilization", 0.5)
@@ -133,85 +98,13 @@ def _estimate_default_risk(fields: Dict[str, float], market_index: float) -> flo
     return max(0.0, min(1.0, risk))
 
 
-def _pipeline_prediction_from_observation(observation: Dict[str, object]) -> Dict[str, object]:
+def policy_action(observation: Dict[str, object], task_name: str) -> str:
+    del task_name
     fields = profile_values(observation)
     market_state = observation.get("market_state") or {}
     market_index = float(market_state.get("default_risk_index", 1.0))
     default_risk = _estimate_default_risk(fields, market_index)
-    approval_confidence = 1.0 - default_risk
-    return score_to_prediction(approval_confidence)
-
-
-def _environment_action_from_prediction(prediction: Dict[str, object], task_name: str, observation: Dict[str, object]) -> Dict[str, object]:
-    tier_map = {"A": "low_risk", "B": "medium_risk", "C": "high_risk"}
-    market_state = observation.get("market_state") or {}
-    market_index = float(market_state.get("default_risk_index", 1.0))
-
-    risk_tier = prediction["risk_tier"]
-    env_tier = tier_map[risk_tier]
-    base_rate = {"A": 10.5, "B": 14.0, "C": 18.5}[risk_tier]
-    rate = round(base_rate + (market_index - 1.0) * 5.0, 2)
-
-    reasoning = (
-        f"Decision based on confidence={prediction['confidence']:.2f}, "
-        f"tier={risk_tier}, and market_index={market_index:.2f}."
-    )
-
-    if prediction["decision"] == "approve":
-        params = {"tier": env_tier, "rate": rate}
-        return {"action_type": "approve", "params": params, "reasoning": reasoning}
-
-    if task_name == "risk_tiering":
-        params = {"tier": env_tier, "rate": rate}
-    else:
-        params = {}
-    return {"action_type": "deny", "params": params, "reasoning": reasoning}
-
-
-def policy_action(observation: Dict[str, object], task_name: str) -> Dict[str, object]:
-    hidden = observation.get("applicant", {}).get("missing_fields", [])
-
-    if len(hidden) > 0 and observation.get("step", 0) < 3:
-        target = _hidden_request_target(observation)
-        if target:
-            return {"action_type": "request_info", "params": {"field": target}, "reasoning": ""}
-
-    if not observation.get("fraud_flags_raised") and _detect_fraud_signal(observation):
-        return {
-            "action_type": "flag_fraud",
-            "params": {"reason": "Confidence anomalies suggest potential misreporting."},
-            "reasoning": "",
-        }
-
-    if not observation.get("market_visible", False) and observation.get("step", 0) < MAX_STEPS - 1:
-        return {"action_type": "query_market", "params": {}, "reasoning": ""}
-
-    prediction = _pipeline_prediction_from_observation(observation)
-    return _environment_action_from_prediction(prediction, task_name, observation)
-
-
-def _terminal_prediction_from_action(action: Dict[str, object]) -> Optional[Dict[str, object]]:
-    action_type = str(action.get("action_type", "")).lower()
-    if action_type not in {"approve", "deny"}:
-        return None
-
-    params = action.get("params", {}) or {}
-    tier = params.get("tier")
-    tier_map = {"low_risk": "A", "medium_risk": "B", "high_risk": "C"}
-    risk_tier = tier_map.get(str(tier).lower(), "B" if action_type == "approve" else "C")
-
-    if action_type == "approve":
-        confidence = {"A": 0.80, "B": 0.55, "C": 0.40}[risk_tier]
-        decision = "approve"
-    else:
-        confidence = {"A": 0.60, "B": 0.40, "C": 0.20}[risk_tier]
-        decision = "reject"
-
-    return {
-        "decision": decision,
-        "risk_tier": risk_tier,
-        "confidence": confidence,
-    }
+    return "REJECT" if default_risk >= 0.50 else "APPROVE"
 
 
 @dataclass
@@ -221,7 +114,6 @@ class StepLog:
     reward: float
     done: bool
     error: Optional[str]
-    local_alignment: Optional[float] = None
 
 
 class EnvironmentRunner:
@@ -234,10 +126,9 @@ class EnvironmentRunner:
 
     def log_step(self, log: StepLog) -> None:
         error_val = log.error if log.error else "null"
-        alignment = "" if log.local_alignment is None else f" local_alignment={log.local_alignment:.4f}"
         print(
             f"[STEP] step={log.step} action={log.action} reward={log.reward:.2f} "
-            f"done={str(log.done).lower()} error={error_val}{alignment}",
+            f"done={str(log.done).lower()} error={error_val}",
             flush=True,
         )
 
@@ -249,7 +140,7 @@ class EnvironmentRunner:
             flush=True,
         )
 
-    def call_model(self, observation: Dict[str, object], task_name: str) -> Dict[str, object]:
+    def call_model(self, observation: Dict[str, object], task_name: str) -> str:
         if client is None:
             return policy_action(observation, task_name)
 
@@ -264,10 +155,10 @@ class EnvironmentRunner:
                 max_tokens=180,
             )
             content = (completion.choices[0].message.content or "").strip()
-            parsed = json.loads(content)
-            if not isinstance(parsed, dict):
-                raise ValueError("Model response was not a JSON object")
-            return parsed
+            action = sanitize_log_value(content).upper()
+            if action not in {"APPROVE", "REJECT"}:
+                raise ValueError("Model response was not APPROVE/REJECT")
+            return action
         except Exception:
             return policy_action(observation, task_name)
 
@@ -275,6 +166,7 @@ class EnvironmentRunner:
         rewards: List[float] = []
         steps_taken = 0
         observation: Dict[str, object] = {}
+        final_reward = MIN_SCORE
 
         self.log_start(task_name)
 
@@ -292,14 +184,8 @@ class EnvironmentRunner:
             while not done and steps_taken < MAX_STEPS:
                 steps_taken += 1
                 action = self.call_model(observation, task_name)
-                action_str = format_action(action)
+                action_str = sanitize_log_value(action)
                 error = None
-                local_alignment = None
-
-                reference_prediction = _pipeline_prediction_from_observation(observation)
-                action_prediction = _terminal_prediction_from_action(action)
-                if action_prediction is not None:
-                    local_alignment = evaluate_prediction(action_prediction, reference_prediction)
 
                 try:
                     step_response = requests.post(
@@ -311,9 +197,11 @@ class EnvironmentRunner:
                     result = step_response.json()
                     observation = result.get("observation", result)
                     reward = float(result.get("reward", 0.0))
+                    final_reward = reward
                     done = bool(result.get("done", False))
                 except Exception as exc:
                     reward = 0.0
+                    final_reward = reward
                     done = True
                     error = sanitize_log_value(str(exc))
 
@@ -325,14 +213,11 @@ class EnvironmentRunner:
                         reward=reward,
                         done=done,
                         error=error,
-                        local_alignment=local_alignment,
                     )
                 )
 
         finally:
-            final_score = strict_score(
-                float(observation.get("episode_score", MIN_SCORE)) if observation else MIN_SCORE
-            )
+            final_score = strict_score(final_reward)
             self.log_end(final_score > 0.0, steps_taken, final_score, rewards)
 
         return final_score
