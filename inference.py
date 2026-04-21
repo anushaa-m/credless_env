@@ -5,6 +5,7 @@ Run:
     python inference.py
     python inference.py --csv path/to/data.csv
     python inference.py --samples 20
+    python inference.py --csv path/to/data.csv --n_rows 5000
 
 What it does:
     1. Loads model (trains from scratch if not found)
@@ -18,27 +19,23 @@ What it does:
 from __future__ import annotations
 
 import argparse
-import json
-import os
-import pickle
 import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, roc_auc_score
-from sklearn.model_selection import train_test_split
-
-try:
-    from lightgbm import LGBMClassifier
-
-    HAS_LGBM = True
-except ImportError:
-    HAS_LGBM = False
-
-from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
 
 from data.synthetic_generator import generate_synthetic_data
+from models.trainer import (
+    META_PATH,
+    MODEL_PATH,
+    SCALER_PATH,
+    load_saved_model,
+    prob_to_decision,
+    prob_to_tier,
+    train_from_frame,
+)
 from pipeline.oracle import oracle_decision
 from pipeline.preprocessor import (
     CATEGORICAL_COLS,
@@ -60,10 +57,6 @@ RESET = "\033[0m"
 TIER_COLOR = {"A": GREEN, "B": YELLOW, "C": RED}
 DEC_COLOR = {"approve": GREEN, "reject": RED}
 
-MODEL_PATH = Path("models/saved/finverse_model.pkl")
-META_PATH = Path("models/saved/model_meta.json")
-SCALER_PATH = Path("models/saved/scaler.pkl")
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FinVerse inference pipeline")
@@ -71,26 +64,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--n_rows",
         type=int,
-        default=12000,
-        help="Synthetic rows when CSV is missing or omitted",
+        default=None,
+        help="Synthetic row count, or real CSV sample size when provided",
     )
     parser.add_argument("--samples", type=int, default=20, help="Sample rows to print")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--retrain", action="store_true", help="Force retrain model")
     parser.add_argument("--jsonl", type=str, default="data/dataset.jsonl")
     return parser.parse_args()
-
-
-def prob_to_tier(prob: float) -> str:
-    if prob >= 0.70:
-        return "A"
-    if prob >= 0.45:
-        return "B"
-    return "C"
-
-
-def prob_to_decision(prob: float) -> str:
-    return "approve" if prob >= 0.50 else "reject"
 
 
 def _approve_target_from_raw(value: object) -> int:
@@ -101,43 +82,20 @@ def _approve_target_from_value(value: object) -> int:
     return int(value)
 
 
-def _build_model(seed: int):
-    if HAS_LGBM:
-        return LGBMClassifier(
-            n_estimators=400,
-            learning_rate=0.05,
-            max_depth=6,
-            num_leaves=63,
-            min_child_samples=20,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_alpha=0.1,
-            reg_lambda=0.1,
-            class_weight="balanced",
-            random_state=seed,
-            verbose=-1,
-        )
-
-    return LogisticRegression(
-        max_iter=1000,
-        C=1.0,
-        class_weight="balanced",
-        random_state=seed,
-    )
-
-
 def _load_raw_frame(csv_path: str | None, n_rows: int, seed: int) -> tuple[pd.DataFrame, str]:
     if csv_path and Path(csv_path).exists():
         raw_df = pd.read_csv(csv_path, low_memory=False)
         raw_df.columns = [column.strip().lower().replace(" ", "_") for column in raw_df.columns]
         raw_df = raw_df.loc[:, ~raw_df.columns.duplicated()]
+        if n_rows and n_rows > 0 and len(raw_df) > n_rows:
+            raw_df = raw_df.sample(n=n_rows, random_state=seed).reset_index(drop=True)
         source = str(Path(csv_path))
     else:
         if csv_path:
             print(f"[inference] CSV not found at '{csv_path}' - using synthetic fallback")
         else:
             print("[inference] No CSV provided - using synthetic fallback")
-        raw_df = generate_synthetic_data(n_samples=n_rows, seed=seed, include_target=True)
+        raw_df = generate_synthetic_data(n_samples=n_rows or 12000, seed=seed, include_target=True)
         source = "synthetic"
 
     return raw_df.reset_index(drop=True), source
@@ -165,94 +123,27 @@ def _build_ml_frame(raw_df: pd.DataFrame, source: str) -> tuple[pd.DataFrame, li
     return df_model, ml_features
 
 
-def _save_artifacts(model, scaler, feature_cols: list[str], y_train: np.ndarray, y_val: np.ndarray, val_acc: float, val_auc: float, seed: int, jsonl_path: str) -> None:
-    os.makedirs("models/saved", exist_ok=True)
-
-    with open(SCALER_PATH, "wb") as handle:
-        pickle.dump(scaler, handle)
-
-    artifact = {
-        "model": model,
-        "feature_cols": feature_cols,
-        "model_type": "lightgbm" if HAS_LGBM else "logistic_regression",
-        "val_accuracy": round(float(val_acc), 4),
-        "val_auc": round(float(val_auc), 4),
-        "seed": int(seed),
-    }
-    with open(MODEL_PATH, "wb") as handle:
-        pickle.dump(artifact, handle)
-
-    metadata = {
-        "feature_cols": feature_cols,
-        "model_type": artifact["model_type"],
-        "val_accuracy": round(float(val_acc), 4),
-        "val_auc": round(float(val_auc), 4),
-        "n_train": int(len(y_train)),
-        "n_val": int(len(y_val)),
-        "approve_rate_train": round(float(np.mean(y_train)), 4),
-        "target_positive_class": "approve",
-        "jsonl_path": jsonl_path,
-        "model_path": str(MODEL_PATH).replace("\\", "/"),
-        "scaler_path": str(SCALER_PATH).replace("\\", "/"),
-    }
-    with open(META_PATH, "w", encoding="utf-8") as handle:
-        json.dump(metadata, handle, indent=2)
-
-
-def _train_model(df_model: pd.DataFrame, feature_cols: list[str], seed: int, jsonl_path: str):
-    X = df_model[feature_cols].values
-    y = df_model["target"].values
-
-    X_train, X_val, y_train, y_val = train_test_split(
-        X,
-        y,
-        test_size=0.20,
-        random_state=seed,
-        stratify=y,
-    )
-
-    from sklearn.preprocessing import StandardScaler
-
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_val_scaled = scaler.transform(X_val)
-
-    model = _build_model(seed)
-    model.fit(X_train_scaled, y_train)
-
-    y_prob = model.predict_proba(X_val_scaled)[:, 1]
-    y_pred = (y_prob >= 0.50).astype(int)
-    val_acc = accuracy_score(y_val, y_pred)
-    val_auc = roc_auc_score(y_val, y_prob)
-
-    print(f"[inference] trained model | val_acc={val_acc:.4f} | val_auc={val_auc:.4f}")
-    _save_artifacts(model, scaler, feature_cols, y_train, y_val, val_acc, val_auc, seed, jsonl_path)
-    return model, scaler, feature_cols
-
-
-def _load_saved_model():
-    with open(MODEL_PATH, "rb") as handle:
-        artifact = pickle.load(handle)
-    with open(SCALER_PATH, "rb") as handle:
-        scaler = pickle.load(handle)
-
-    if isinstance(artifact, dict):
-        model = artifact["model"]
-        feature_cols = artifact["feature_cols"]
-    else:
-        raise ValueError("Unexpected saved model format")
-    return model, scaler, feature_cols
-
-
 def _ensure_model(args: argparse.Namespace, df_model: pd.DataFrame, feature_cols: list[str]):
     if args.retrain or not MODEL_PATH.exists() or not SCALER_PATH.exists() or not META_PATH.exists():
         if args.retrain:
             print("[inference] --retrain flag set - retraining model")
         else:
             print("[inference] No saved model found - training now")
-        return _train_model(df_model, feature_cols, args.seed, args.jsonl)
+        artifacts = train_from_frame(
+            df_model,
+            feature_cols,
+            seed=args.seed,
+            val_size=0.20,
+            jsonl_path=args.jsonl,
+            save=True,
+        )
+        print(
+            f"[inference] trained model | "
+            f"val_acc={artifacts.val_accuracy:.4f} | val_auc={artifacts.val_auc:.4f}"
+        )
+        return artifacts.model, artifacts.scaler, artifacts.feature_cols
     print("[inference] Loading saved model")
-    return _load_saved_model()
+    return load_saved_model()
 
 
 def _print_banner() -> None:
@@ -347,6 +238,13 @@ def main() -> None:
     elapsed = time.time() - started
     gt_acc = accuracy_score(y_true, (y_prob >= 0.50).astype(int))
     gt_auc = roc_auc_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else float("nan")
+    target_report = classification_report(
+        y_true,
+        (y_prob >= 0.50).astype(int),
+        target_names=["reject", "approve"],
+        output_dict=True,
+        zero_division=0,
+    )
 
     model_tiers = [pred["risk_tier"] for pred in model_predictions]
     oracle_tiers = [oracle["risk_tier"] for oracle in oracle_results]
@@ -371,6 +269,8 @@ def main() -> None:
     print(f"    Accuracy              : {GREEN}{gt_acc:.4f}{RESET}")
     if not np.isnan(gt_auc):
         print(f"    ROC-AUC               : {GREEN}{gt_auc:.4f}{RESET}")
+    print(f"    Reject recall         : {GREEN}{target_report['reject']['recall']:.4f}{RESET}")
+    print(f"    Approve recall        : {GREEN}{target_report['approve']['recall']:.4f}{RESET}")
     print()
     print(f"  {BOLD}vs Oracle{RESET}")
     print(f"    Decision accuracy     : {GREEN}{results['decision_acc']:.4f}{RESET}")

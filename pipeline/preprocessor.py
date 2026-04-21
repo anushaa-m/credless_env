@@ -19,7 +19,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
 
 from credless_model.dataset_pipeline import DEFAULT_DATASET_PATH
 from data.synthetic_generator import generate_synthetic_data
@@ -219,9 +218,10 @@ def _row_to_structured_json(row: pd.Series) -> dict:
 def load_and_preprocess(
     csv_path: Optional[str] = None,
     n_synthetic: int = 12000,
+    max_rows: Optional[int] = None,
     output_jsonl: Optional[str] = None,
     seed: int = 42,
-) -> tuple[pd.DataFrame, StandardScaler]:
+) -> tuple[pd.DataFrame, None]:
     target_converter = _approve_target_from_raw
 
     if csv_path and Path(csv_path).exists():
@@ -231,6 +231,9 @@ def load_and_preprocess(
         df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
         # The dataset contains a duplicate `property_owned` column; keep the first.
         df = df.loc[:, ~df.columns.duplicated()]
+        if max_rows is not None and max_rows > 0 and len(df) > max_rows:
+            df = df.sample(n=max_rows, random_state=seed).reset_index(drop=True)
+            print(f"[preprocessor] Sampled {len(df)} rows from real CSV")
     else:
         dataset_path = None
         target_converter = _approve_target_from_value
@@ -298,11 +301,8 @@ def load_and_preprocess(
     else:
         df_model["target"] = (df["oracle_decision"] == "approve").astype(int).values
 
-    scaler = StandardScaler()
-    df_model[ml_features] = scaler.fit_transform(df_model[ml_features])
-
     print(
         f"[preprocessor] ML DataFrame: {df_model.shape} | "
         f"Approve rate: {df_model['target'].mean():.2%}"
     )
-    return df_model, scaler
+    return df_model, None

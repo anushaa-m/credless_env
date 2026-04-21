@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "credless-env"
 version = "1.0.0"
-description = "CredLess Credit Analyst — OpenEnv RL environment"
+description = "FinVerse end-to-end credit decision pipeline with training, inference, oracle scoring, and packaging"
 requires-python = ">=3.10"
 dependencies = [
     "openenv==0.1.13",
@@ -15,21 +15,25 @@ dependencies = [
     "scikit-learn>=1.3",
     "joblib",
     "numpy>=1.24",
+    "pandas>=2.0",
     "openai>=1.0",
     "requests",
     "python-dotenv",
 ]
 
-# ✅ ADD THIS — fixes Issue 1
 [project.scripts]
 server = "server.app:main"
 credless-server = "server.app:main"
+finverse-train = "train:main"
+finverse-infer = "inference:main"
+
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]
+packages = ["credless_model", "env", "models", "pipeline", "server"]
 
 [tool.hatch.envs.default.scripts]
 server = "uvicorn server.app:app --host 0.0.0.0 --port 7860 --reload"
-train  = "python credless_model/train.py"
+train = "python train.py"
+infer = "python inference.py"
