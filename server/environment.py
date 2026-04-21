@@ -235,6 +235,14 @@ class CreditAnalystEnvironment(Environment):
     def _coerce_action(self, action: str | FinVerseAction) -> FinVerseAction:
         if isinstance(action, FinVerseAction):
             return action
+        if isinstance(action, dict):
+            action_type = str(action.get("action_type", "")).strip()
+            params = action.get("params", {}) or {}
+            reasoning = str(action.get("reasoning", "") or "")
+            normalized = action_type.lower()
+            if normalized == "request_more_info":
+                normalized = "request_info"
+            return FinVerseAction(action_type=normalized, params=params, reasoning=reasoning)
         raw = str(action or "").strip()
         if raw == "APPROVE":
             return FinVerseAction(action_type="approve", params={}, reasoning="")

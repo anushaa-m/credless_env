@@ -1,5 +1,5 @@
 {
-  "model_name": "XGBoost",
+  "model_name": "LogisticRegression",
   "feature_names": [
     "revolving_utilization",
     "delinquency_30_59",
@@ -22,16 +22,24 @@
     "open_credit_lines",
     "location_risk_index"
   ],
-  "threshold": 0.4270629584789276,
+  "curriculum": [
+    "stage1_easy",
+    "stage2_medium",
+    "stage3_hard"
+  ],
+  "threshold": 0.365372,
   "risk_thresholds": {
-    "low_risk": 0.4,
-    "medium_risk": 0.7
+    "low_risk": 0.2192,
+    "medium_risk": 0.3654
   },
-  "metrics": {
-    "cv_auc": 0.87736850125,
-    "test_auc": 0.8785240288888888
+  "splits": {
+    "train_rows": 105000,
+    "validation_rows": 22500,
+    "test_rows": 22500,
+    "source": "prepared_splits"
   },
-  "default_rate": 0.5,
-  "n_train": 120000,
-  "n_test": 30000
+  "raw_dataset_target_mapping": {
+    "raw_target_1": "non_default_or_good_outcome",
+    "model_target_1": "default_risk"
+  }
 }

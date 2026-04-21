@@ -1,7 +1,7 @@
 import json
 import os
 import subprocess
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
@@ -42,7 +42,7 @@ def reset(body: ResetRequest = ResetRequest()):
 
 
 @app.post("/step")
-def step(action: str | FinVerseAction = Body(..., embed=False)):
+def step(action: Any = Body(..., embed=False)):
     obs = env.step(action)
     return {
         "observation": obs.model_dump(),

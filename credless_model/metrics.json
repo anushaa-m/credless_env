@@ -1,0 +1,11 @@
+{
+  "validation_auc": 0.866286,
+  "validation_accuracy": 0.763778,
+  "validation_precision": 0.715991,
+  "validation_recall": 0.8744,
+  "validation_best_f1": 0.787306,
+  "test_auc": 0.856238,
+  "test_accuracy": 0.757956,
+  "test_precision": 0.714423,
+  "test_recall": 0.859467
+}
