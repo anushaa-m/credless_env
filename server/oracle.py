@@ -183,6 +183,45 @@ class CredLessOracle:
             "market_summary": config["summary"],
         }
 
+    def explain_decision(self, features: Dict[str, float], market_condition: str = "Stable Credit") -> Dict[str, object]:
+        risk = self.predict_risk(features, market_condition=market_condition)
+        result = self.predict(features, market_condition=market_condition)
+        adjusted = self._apply_market_adjustments(features, market_condition)
+
+        if hasattr(self.model, "coef_"):
+            coef = np.asarray(self.model.coef_[0], dtype=float)
+            contributions = [
+                (name, float(weight) * float(adjusted.get(name, 0.0)))
+                for name, weight in zip(self.feature_order, coef)
+            ]
+        else:
+            contributions = [
+                ("total_delinquency_score", 0.24 * float(adjusted.get("total_delinquency_score", 0.0))),
+                ("debt_burden_score", 0.18 * float(adjusted.get("debt_burden_score", 0.0))),
+                ("overdraft_risk", 0.10 * float(adjusted.get("overdraft_risk", 0.0))),
+                ("location_risk_index", 0.08 * float(adjusted.get("location_risk_index", 0.0))),
+                ("payment_reliability", -0.16 * float(adjusted.get("payment_reliability", 0.0))),
+                ("income_capacity_score", -0.14 * float(adjusted.get("income_capacity_score", 0.0))),
+                ("employment_stability", -0.10 * float(adjusted.get("employment_stability", 0.0))),
+                ("net_worth_score", -0.08 * float(adjusted.get("net_worth_score", 0.0))),
+            ]
+
+        top = sorted(contributions, key=lambda item: abs(item[1]), reverse=True)[:3]
+        dominant_feature, dominant_value = top[0] if top else ("unknown", 0.0)
+        dominant_direction = "increases risk" if dominant_value >= 0 else "supports approval"
+        explanation = (
+            f"Decision={result['decision']} tier={result['tier']} with default_risk={risk:.4f}. "
+            f"Dominant factor: {dominant_feature} ({dominant_direction})."
+        )
+        return {
+            "decision": result["decision"],
+            "tier": result["tier"],
+            "default_risk": round(risk, 6),
+            "feature_contributions": [(name, round(value, 6)) for name, value in top],
+            "dominant_reason": dominant_feature,
+            "explanation": explanation,
+        }
+
 
 def oracle_decision(applicant: Dict[str, object]) -> Dict[str, object]:
     """

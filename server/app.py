@@ -1,12 +1,13 @@
 import json
 import os
 import subprocess
+from typing import Optional
 
 from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
 
+from models import FinVerseAction
 from .environment import CreditAnalystEnvironment
 from .tasks import TASK_REGISTRY
 
@@ -41,8 +42,14 @@ def reset(body: ResetRequest = ResetRequest()):
 
 
 @app.post("/step")
-def step(action: str = Body(..., embed=False)):
-    return env.step(action)
+def step(action: str | FinVerseAction = Body(..., embed=False)):
+    obs = env.step(action)
+    return {
+        "observation": obs.model_dump(),
+        "reward": obs.step_reward,
+        "done": obs.done,
+        "info": env.last_info(),
+    }
 
 
 @app.get("/state")

@@ -1,0 +1,37 @@
+{
+  "model_name": "XGBoost",
+  "feature_names": [
+    "revolving_utilization",
+    "delinquency_30_59",
+    "delinquency_60_89",
+    "delinquency_90plus",
+    "total_delinquency_score",
+    "debt_burden_score",
+    "real_estate_exposure",
+    "medical_stress_score",
+    "income_capacity_score",
+    "net_worth_score",
+    "asset_ownership_score",
+    "payment_reliability",
+    "transaction_health",
+    "overdraft_risk",
+    "employment_stability",
+    "account_maturity",
+    "business_health_score",
+    "age_years",
+    "open_credit_lines",
+    "location_risk_index"
+  ],
+  "threshold": 0.4270629584789276,
+  "risk_thresholds": {
+    "low_risk": 0.4,
+    "medium_risk": 0.7
+  },
+  "metrics": {
+    "cv_auc": 0.87736850125,
+    "test_auc": 0.8785240288888888
+  },
+  "default_rate": 0.5,
+  "n_train": 120000,
+  "n_test": 30000
+}

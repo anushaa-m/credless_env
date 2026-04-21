@@ -4,19 +4,22 @@ import random
 import uuid
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 from openenv.core.env_server.interfaces import Environment
 
-from models import FinVerseObservation, FinVerseState
+from models import FinVerseAction, FinVerseObservation, FinVerseState
 from .data_generator import FIELD_NAMES, generate_applicant
 from .oracle import MARKET_SCENARIOS, CredLessOracle
 from .tasks import TASK_DIFFICULTY, TASK_NAMES
 
-MAX_STEPS = 5
-VALID_ACTIONS = ["APPROVE", "REJECT"]
-VALID_STEP_BONUS = 0.05
-EFFICIENCY_PENALTY = 0.01
+MAX_STEPS = 8
+VALID_FIELD_REQUEST_REWARD = 0.05
+STEP_PENALTY = 0.01
 INVALID_ACTION_PENALTY = 0.5
+POLICY_REQUIRED_FIELDS = {
+    "easy": ["payment_reliability", "debt_burden_score"],
+    "medium": ["payment_reliability", "debt_burden_score", "overdraft_risk"],
+    "hard": ["payment_reliability", "debt_burden_score", "overdraft_risk", "total_delinquency_score"],
+}
 
 
 class CreditAnalystEnvironment(Environment):
@@ -36,18 +39,25 @@ class CreditAnalystEnvironment(Environment):
         self._market_state: Dict[str, Any] = {}
         self._market_visible = False
         self._current_policy: Dict[str, Any] = {}
+        self._conversation: List[Dict[str, Any]] = []
+        self._fraud_flags: List[str] = []
+        self._requested_fields: List[str] = []
         self._revealed_fields: Dict[str, Dict[str, Any]] = {}
         self._done = False
         self._last_episode_score = 0.0
-        self._oracle_risk = 0.5
-        self._oracle_decision = "REJECT"
+        self._last_info: Dict[str, Any] = {}
+        self.trajectory: List[Any] = []
 
     def _build_policy(self, rng: random.Random) -> Dict[str, Any]:
+        max_dti = {
+            "easy": 0.60,
+            "medium": 0.55,
+            "hard": 0.50,
+        }[self._difficulty]
+        max_dti += rng.uniform(-0.03, 0.03)
         return {
-            "valid_actions": list(VALID_ACTIONS),
-            "step_contract": "Return only APPROVE or REJECT.",
-            "dense_reward": VALID_STEP_BONUS,
-            "efficiency_penalty": EFFICIENCY_PENALTY,
+            "max_dti": round(max(0.35, min(0.70, max_dti)), 3),
+            "required_fields": list(POLICY_REQUIRED_FIELDS[self._difficulty]),
         }
 
     def _pick_market(self, rng: random.Random) -> Dict[str, Any]:
@@ -65,7 +75,7 @@ class CreditAnalystEnvironment(Environment):
         return {
             "applicant_id": self._applicant.get("applicant_id", ""),
             "profile": dict(self._revealed_fields),
-            "missing_fields": [],
+            "missing_fields": [field for field in FIELD_NAMES if field not in self._revealed_fields],
             "declared_quality": self._applicant.get("data_quality", "observed_with_noise"),
             "source": self._applicant.get("source", "dataset_sample"),
         }
@@ -88,14 +98,14 @@ class CreditAnalystEnvironment(Environment):
 
         return FinVerseObservation(
             applicant=self._applicant_payload(),
-            conversation_history=[],
+            conversation_history=list(self._conversation),
             market_visible=self._market_visible,
             market_state=market_state,
             current_policy=dict(self._current_policy),
             compliance_history=list(self._auditor_compliance_log[-3:]),
             step=self._steps_taken,
             max_steps=MAX_STEPS,
-            fraud_flags_raised=[],
+            fraud_flags_raised=list(self._fraud_flags),
             step_reward=round(step_reward, 4),
             cumulative_reward=round(self._cumulative_reward, 4),
             done=done,
@@ -104,12 +114,36 @@ class CreditAnalystEnvironment(Environment):
             task_name=self._task,
         )
 
+    def _append_conversation(self, role: str, content: str) -> None:
+        self._conversation.append(
+            {
+                "role": role,
+                "content": content,
+                "step": self._steps_taken,
+            }
+        )
+
     def _reveal_field(self, field: str, source: str) -> None:
         self._revealed_fields[field] = {
             "value": round(float(self._applicant["presented_features"][field]), 6),
             "confidence": round(float(self._applicant["field_confidence"][field]), 3),
             "source": source,
         }
+
+    def _set_last_info(self, explanation: str, oracle_score: float, penalties: Dict[str, float] | None = None) -> None:
+        self._last_info = {
+            "task_name": self._task,
+            "cumulative_reward": round(self._cumulative_reward, 4),
+            "episode_score": round(self._last_episode_score, 4),
+            "market_visible": self._market_visible,
+            "fraud_flags_raised": list(self._fraud_flags),
+            "explanation": explanation,
+            "oracle_score": round(float(oracle_score), 4),
+            "penalties_applied": penalties or {},
+        }
+
+    def last_info(self) -> Dict[str, Any]:
+        return dict(self._last_info)
 
     def reset(self, task_name: str = "binary_decision", seed: Optional[int] = None) -> FinVerseObservation:
         if task_name not in TASK_NAMES:
@@ -126,119 +160,246 @@ class CreditAnalystEnvironment(Environment):
         self._last_episode_score = 0.0
         self._applicant = generate_applicant(seed=seed, difficulty=self._difficulty)
         self._market_state = self._pick_market(rng)
-        self._ground_truth = self.oracle.predict(self._applicant["features"], market_condition=self._market_state["name"])
-        self._oracle_risk = self.oracle.predict_risk(
+        self._ground_truth = self.oracle.predict(
             self._applicant["features"],
             market_condition=self._market_state["name"],
         )
-        self._oracle_decision = "REJECT" if self._oracle_risk >= 0.50 else "APPROVE"
-        self._market_visible = True
+        self._market_visible = False
         self._current_policy = self._build_policy(rng)
+        self._conversation = []
+        self._fraud_flags = []
+        self._requested_fields = []
         self._revealed_fields = {}
+        self.trajectory = []
 
-        for field in FIELD_NAMES:
+        for field in self._applicant.get("visible_fields", []):
             self._reveal_field(field, source="initial")
 
+        self._append_conversation(
+            "system",
+            (
+                f"Episode {self._episode_id} started for task '{self._task}' with difficulty "
+                f"'{self._difficulty}'. Investigate the applicant within {MAX_STEPS} steps."
+            ),
+        )
+        self._append_conversation(
+            "applicant",
+            (
+                f"Submitting application {self._applicant['applicant_id']} with partially observed "
+                f"profile data. Declared quality: {self._applicant.get('data_quality', 'observed_with_noise')}."
+            ),
+        )
+        self._set_last_info("Episode reset.", 0.0, {})
         return self._build_observation(
             message=(
-                "Environment ready. Submit exactly one uppercase action: APPROVE or REJECT."
+                "Partial applicant profile received. Use request_info to ask for specific fields, "
+                "query_market to reveal market conditions, flag_fraud when needed, and finish with "
+                "approve, deny, or escalate."
             )
         )
 
-    def _invalid_observation(self, message: str, reward: float) -> FinVerseObservation:
+    def _invalid(self, message: str, penalty: float = INVALID_ACTION_PENALTY) -> FinVerseObservation:
+        reward = -(penalty + STEP_PENALTY)
         self._cumulative_reward += reward
+        self._set_last_info(
+            message,
+            0.0,
+            {"invalid_action": penalty, "efficiency": STEP_PENALTY},
+        )
         return self._build_observation(step_reward=reward, message=message)
 
-    def _ensure_active(self) -> Optional[Dict[str, object]]:
+    def _ensure_active(self) -> Optional[FinVerseObservation]:
         if not self._episode_id:
-            return {
-                "reward": float(-(INVALID_ACTION_PENALTY + EFFICIENCY_PENALTY)),
-                "done": True,
-                "info": {
-                    "explanation": "No active episode. Call reset() before step().",
-                    "oracle_score": 0.0,
-                    "oracle_risk": 0.0,
-                    "oracle_decision": "",
-                    "penalties_applied": {
-                        "invalid_action": INVALID_ACTION_PENALTY,
-                        "efficiency": EFFICIENCY_PENALTY,
-                    },
-                },
-            }
+            self._set_last_info("ERROR: call /reset before /step.", 0.0, {"invalid_action": INVALID_ACTION_PENALTY})
+            return FinVerseObservation(
+                step_reward=-(INVALID_ACTION_PENALTY + STEP_PENALTY),
+                done=True,
+                message="ERROR: call /reset before /step.",
+                episode_score=0.0,
+                task_name=self._task,
+            )
         if self._done:
-            return {
-                "reward": 0.0,
-                "done": True,
-                "info": {
-                    "explanation": "Episode already completed. Call reset() to start a new episode.",
-                    "oracle_score": round(float(self._last_episode_score), 4),
-                    "oracle_risk": round(float(self._oracle_risk), 4),
-                    "oracle_decision": self._oracle_decision,
-                    "penalties_applied": {"invalid_action": 0.0, "efficiency": 0.0},
-                },
-            }
+            self._set_last_info(
+                "Episode already completed. Call /reset to start a new episode.",
+                self._last_episode_score,
+                {},
+            )
+            return self._build_observation(
+                step_reward=0.0,
+                done=True,
+                episode_score=self._last_episode_score,
+                message="Episode already completed. Call /reset to start a new episode.",
+            )
         return None
 
-    def _normalize_action(self, action: str) -> str:
-        normalized = str(action or "").strip()
-        assert normalized in VALID_ACTIONS
-        return normalized
+    def _coerce_action(self, action: str | FinVerseAction) -> FinVerseAction:
+        if isinstance(action, FinVerseAction):
+            return action
+        raw = str(action or "").strip()
+        if raw == "APPROVE":
+            return FinVerseAction(action_type="approve", params={}, reasoning="")
+        if raw == "REJECT":
+            return FinVerseAction(action_type="deny", params={}, reasoning="")
+        raise ValueError(f"Unsupported action '{raw}'.")
 
-    def _oracle_explanation(self, action: str, oracle_score: float, penalties: Dict[str, float]) -> str:
-        return (
-            f"Action={action}. Oracle default risk={self._oracle_risk:.4f}, "
-            f"oracle_decision={self._oracle_decision}, oracle_score={oracle_score:.4f}. "
-            f"Penalties applied: invalid_action={penalties['invalid_action']:.2f}, "
-            f"efficiency={penalties['efficiency']:.2f}. "
-            "Terminal reward uses oracle_score by contract."
+    def _oracle_score_for_decision(self, decision: str) -> float:
+        default_prob = float(self._ground_truth.get("default_prob", 0.5))
+        if decision == "approve":
+            return round(max(0.0, min(1.0, 1.0 - default_prob)), 4)
+        if decision == "deny":
+            return round(max(0.0, min(1.0, default_prob)), 4)
+        return 0.0
+
+    def _handle_request_info(self, action: FinVerseAction) -> FinVerseObservation:
+        field = str(action.params.get("field", "")).strip()
+        if not field:
+            return self._invalid("request_info requires params.field.")
+        if field not in FIELD_NAMES:
+            return self._invalid(f"Unknown applicant field '{field}'.")
+        if field in self._revealed_fields:
+            return self._invalid(f"Field '{field}' is already visible.", penalty=0.10)
+
+        self._requested_fields.append(field)
+        self._append_conversation("assistant", f"Please provide the field '{field}'.")
+        self._reveal_field(field, source="requested")
+        profile_entry = self._revealed_fields[field]
+        self._append_conversation(
+            "applicant",
+            (
+                f"{field} provided as {profile_entry['value']:.6f} "
+                f"with self-reported confidence {profile_entry['confidence']:.2f}."
+            ),
         )
 
-    def _final_info(self, action: str, oracle_score: float, penalties: Dict[str, float]) -> Dict[str, object]:
-        return {
-            "explanation": self._oracle_explanation(action, oracle_score, penalties),
-            "oracle_score": round(float(oracle_score), 4),
-            "oracle_risk": round(float(self._oracle_risk), 4),
-            "oracle_decision": self._oracle_decision,
-            "penalties_applied": penalties,
-            "configured_valid_step_bonus": VALID_STEP_BONUS,
-            "reward_rule": "final reward = oracle_score when done=True",
-        }
+        reward = VALID_FIELD_REQUEST_REWARD - STEP_PENALTY
+        self._cumulative_reward += reward
+        self._set_last_info(
+            f"Revealed '{field}' from applicant response.",
+            0.0,
+            {"valid_field_request": VALID_FIELD_REQUEST_REWARD, "efficiency": STEP_PENALTY},
+        )
+        return self._build_observation(
+            step_reward=reward,
+            message=f"Revealed '{field}' from applicant response.",
+        )
 
-    def step(self, action: str) -> Dict[str, object]:
+    def _handle_query_market(self) -> FinVerseObservation:
+        if self._market_visible:
+            return self._invalid("Market state is already visible.", penalty=0.10)
+
+        self._market_visible = True
+        self._append_conversation("assistant", "Requesting current lending market conditions.")
+        self._append_conversation(
+            "system",
+            (
+                f"Market revealed: {self._market_state['name']} with base rate "
+                f"{self._market_state['base_rate']} and outlook '{self._market_state['sector_outlook']}'."
+            ),
+        )
+        reward = -STEP_PENALTY
+        self._cumulative_reward += reward
+        self._set_last_info(
+            "Market conditions revealed.",
+            0.0,
+            {"efficiency": STEP_PENALTY},
+        )
+        return self._build_observation(
+            step_reward=reward,
+            message="Market conditions revealed at the cost of one investigation step.",
+        )
+
+    def _handle_flag_fraud(self, action: FinVerseAction) -> FinVerseObservation:
+        reason = str(action.params.get("reason", "") or action.reasoning).strip()
+        if not reason:
+            return self._invalid("flag_fraud requires params.reason or reasoning.")
+        if reason in self._fraud_flags:
+            return self._invalid("This fraud flag has already been raised.", penalty=0.10)
+
+        self._fraud_flags.append(reason)
+        self._append_conversation("assistant", f"Fraud flag raised: {reason}")
+        reward = -STEP_PENALTY
+        self._cumulative_reward += reward
+        self._set_last_info(
+            "Fraud flag recorded for downstream review.",
+            0.0,
+            {"efficiency": STEP_PENALTY},
+        )
+        return self._build_observation(
+            step_reward=reward,
+            message="Fraud flag recorded for downstream review.",
+        )
+
+    def _handle_terminal(self, action: FinVerseAction) -> FinVerseObservation:
+        oracle_score = self._oracle_score_for_decision(action.action_type)
+        explanation = self.oracle.explain_decision(
+            self._applicant["features"],
+            market_condition=self._market_state["name"],
+        )
+
+        reward = oracle_score if action.action_type in {"approve", "deny"} else 0.0
+        self._cumulative_reward += reward
+        self._done = True
+        self._last_episode_score = reward
+        self._auditor_compliance_log.append(reward)
+        self._append_conversation(
+            "assistant",
+            f"Final action: {action.action_type}. Reasoning: {action.reasoning.strip()}",
+        )
+        self._append_conversation(
+            "system",
+            (
+                f"Episode resolved with oracle_decision={self._ground_truth['decision']} "
+                f"and oracle_score={oracle_score:.4f}."
+            ),
+        )
+        self._set_last_info(
+            explanation["explanation"],
+            oracle_score,
+            {"final_reward": oracle_score},
+        )
+        return self._build_observation(
+            step_reward=reward,
+            done=True,
+            episode_score=reward,
+            message=explanation["explanation"],
+        )
+
+    def step(self, action: str | FinVerseAction) -> FinVerseObservation:
         guard = self._ensure_active()
         if guard is not None:
             return guard
 
         self._steps_taken += 1
-        penalties = {"invalid_action": 0.0, "efficiency": 0.0}
+        if self._steps_taken > MAX_STEPS:
+            self._done = True
+            self._last_episode_score = 0.0
+            self._set_last_info(
+                "Episode timed out before the investigation concluded.",
+                0.0,
+                {"efficiency": STEP_PENALTY},
+            )
+            return self._build_observation(
+                step_reward=-STEP_PENALTY,
+                done=True,
+                episode_score=0.0,
+                message="Episode timed out before the investigation concluded.",
+            )
 
         try:
-            normalized_action = self._normalize_action(action)
-        except AssertionError:
-            penalties["efficiency"] = EFFICIENCY_PENALTY
-            penalties["invalid_action"] = INVALID_ACTION_PENALTY
-            reward = -(INVALID_ACTION_PENALTY + EFFICIENCY_PENALTY)
-            done = self._steps_taken >= MAX_STEPS
-            if done:
-                self._done = True
-                self._last_episode_score = 0.0
-            return {
-                "reward": round(float(reward), 4),
-                "done": done,
-                "info": self._final_info("INVALID", 0.0, penalties),
-            }
+            coerced_action = self._coerce_action(action)
+        except ValueError as exc:
+            self.trajectory.append({"step": self._steps_taken, "action": str(action)})
+            return self._invalid(str(exc))
 
-        oracle_score = (1.0 - float(self._oracle_risk)) if normalized_action == "APPROVE" else float(self._oracle_risk)
-        reward = float(np.clip(oracle_score, 0.0, 1.0))
-        self._cumulative_reward += reward
-        self._done = True
-        self._last_episode_score = reward
-        self._auditor_compliance_log.append(reward)
-        return {
-            "reward": round(reward, 4),
-            "done": True,
-            "info": self._final_info(normalized_action, reward, penalties),
-        }
+        self.trajectory.append({"step": self._steps_taken, "action": coerced_action.model_dump()})
+
+        if coerced_action.action_type == "request_info":
+            return self._handle_request_info(coerced_action)
+        if coerced_action.action_type == "query_market":
+            return self._handle_query_market()
+        if coerced_action.action_type == "flag_fraud":
+            return self._handle_flag_fraud(coerced_action)
+        return self._handle_terminal(coerced_action)
 
     def state(self) -> FinVerseState:
         return FinVerseState(
@@ -248,8 +409,8 @@ class CreditAnalystEnvironment(Environment):
             applicant_ground_truth=dict(self._applicant.get("features", {})),
             applicant_is_fraudulent=bool(self._applicant.get("is_adversarial", False)),
             market_state=dict(self._market_state),
-            conversation=[],
-            fraud_flags=[],
+            conversation=list(self._conversation),
+            fraud_flags=list(self._fraud_flags),
             steps_taken=self._steps_taken,
             auditor_compliance_log=list(self._auditor_compliance_log),
             episode_count=self._episode_count,
