@@ -38,6 +38,31 @@ REQUEST_PRIORITY = [
 ]
 
 
+def _oracle_factor_names(top_factors: list[list[Any]]) -> list[str]:
+    names: list[str] = []
+    for item in top_factors:
+        if isinstance(item, list) and item:
+            names.append(str(item[0]))
+    return names
+
+
+def _local_oracle_payload(env: CreditAnalystEnvironment) -> dict[str, Any]:
+    revealed = env.oracle_features()
+    merged = {field: 0.5 for field in getattr(env.oracle, "feature_order", [])}
+    merged.update(revealed)
+    oracle_risk = float(env.oracle.predict_risk(merged, market_condition=env._market_state["name"]))  # type: ignore[attr-defined]
+    oracle_confidence = float(max(oracle_risk, 1.0 - oracle_risk))
+    top_factors = [
+        [str(item["feature"]), float(item["contribution"])]
+        for item in env.risk_predictor.explain(merged, top_k=5)
+    ]
+    return {
+        "oracle_risk": oracle_risk,
+        "oracle_confidence": oracle_confidence,
+        "top_factors": top_factors,
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deterministic CredLess inference runner.")
     parser.add_argument("--csv", type=str, default=DEFAULT_CSV, help="Optional CSV path.")
@@ -133,20 +158,27 @@ def _profile_features(observation: Mapping[str, Any], *, defaults: Mapping[str, 
     return features
 
 
-def _choose_action(observation: Mapping[str, Any], agent1: Any, agent2: Any) -> tuple[dict[str, Any], float, list[dict[str, Any]]]:
+def _choose_action(observation: Mapping[str, Any], oracle_payload: Mapping[str, Any], agent1: Any, agent2: Any) -> tuple[dict[str, Any], float, list[dict[str, Any]]]:
     missing_fields = list(observation.get("applicant", {}).get("missing_fields", []))
     required_fields = list((observation.get("current_policy") or {}).get("required_fields", []))
     profile = observation.get("applicant", {}).get("profile", {})
+    oracle_risk = float(oracle_payload.get("oracle_risk", 0.0) or 0.0)
+    oracle_confidence = float(oracle_payload.get("oracle_confidence", 0.0) or 0.0)
+    factor_names = _oracle_factor_names(list(oracle_payload.get("top_factors", []) or []))
 
     for field in required_fields:
         if field in missing_fields:
+            return {"action_type": "request_info", "params": {"field": field}}, 0.0, []
+
+    for field in factor_names:
+        if field in missing_fields and field not in profile:
             return {"action_type": "request_info", "params": {"field": field}}, 0.0, []
 
     for field in REQUEST_PRIORITY:
         if field in missing_fields and field not in profile:
             return {"action_type": "request_info", "params": {"field": field}}, 0.0, []
 
-    if not observation.get("market_visible", False):
+    if not observation.get("market_visible", False) and oracle_confidence < 0.85:
         return {"action_type": "query_market"}, 0.0, []
 
     confidence = {
@@ -154,15 +186,19 @@ def _choose_action(observation: Mapping[str, Any], agent1: Any, agent2: Any) -> 
         for key, value in profile.items()
         if isinstance(value, Mapping)
     }
-    if confidence and any((1.0 - value) > 0.25 for value in confidence.values()) and not observation.get("fraud_flags_raised"):
+    if (
+        (confidence and any((1.0 - value) > 0.25 for value in confidence.values()))
+        or oracle_risk > 0.72
+    ) and not observation.get("fraud_flags_raised"):
         return {
             "action_type": "flag_fraud",
-            "params": {"reason": "low-confidence profile values require manual verification"},
-            "reasoning": "Potential fraud indicators identified from observed applicant data.",
+            "params": {"reason": "low-confidence profile values or elevated oracle risk require manual verification"},
+            "reasoning": "Potential fraud indicators identified from observed applicant data and oracle risk.",
         }, 0.0, []
 
     features = _profile_features(observation, defaults={field: 0.5 for field in getattr(agent1, "feature_order", [])})
-    risk_score = float(agent1.predict(features))
+    heuristic_risk = float(agent1.predict(features))
+    risk_score = 0.60 * oracle_risk + 0.40 * heuristic_risk if oracle_risk > 0.0 else heuristic_risk
     shap_info = list(agent1.explain(features))
 
     if hasattr(agent2, "generate_with_metadata"):
@@ -173,13 +209,23 @@ def _choose_action(observation: Mapping[str, Any], agent1: Any, agent2: Any) -> 
         decision = str(agent2.generate_decision(features, risk_score, shap_info)).strip().upper()
         reasoning = "Decision from agent 2 policy."
 
+    if observation.get("task_name") == "adaptive_inquiry" and oracle_confidence < 0.60:
+        return {
+            "action_type": "escalate",
+            "reasoning": f"Escalating because oracle confidence is only {oracle_confidence:.3f}.",
+        }, risk_score, shap_info
+
     terminal_action = "approve" if decision == "APPROVE" else "deny"
-    return {"action_type": terminal_action, "reasoning": reasoning}, risk_score, shap_info
+    return {
+        "action_type": terminal_action,
+        "reasoning": f"{reasoning} Oracle risk={oracle_risk:.3f}, confidence={oracle_confidence:.3f}.",
+    }, risk_score, shap_info
 
 
 def _run_one_local(agent1: Any, agent2: Any, episode_seed: int) -> dict[str, Any]:
     env = CreditAnalystEnvironment()
     observation = env.reset(seed=episode_seed)
+    oracle_payload = _local_oracle_payload(env)
     done = bool(observation.get("done", False))
     risk_score = 0.0
     shap_info: list[dict[str, Any]] = []
@@ -189,18 +235,22 @@ def _run_one_local(agent1: Any, agent2: Any, episode_seed: int) -> dict[str, Any
     steps = 0
     while not done and steps < MAX_EPISODE_STEPS:
         steps += 1
-        action, maybe_risk, maybe_shap = _choose_action(observation, agent1, agent2)
+        action, maybe_risk, maybe_shap = _choose_action(observation, oracle_payload, agent1, agent2)
         if maybe_shap:
             risk_score = maybe_risk
             shap_info = maybe_shap
             final_action = str(action["action_type"]).upper()
         result = env.step(action)
         observation = result.get("observation", observation)
+        oracle_payload = _local_oracle_payload(env)
         done = bool(result.get("done", False))
         final_result = result
 
     return {
         "risk_score": round(risk_score, 6),
+        "oracle_risk": round(float(oracle_payload.get("oracle_risk", 0.0)), 6),
+        "oracle_confidence": round(float(oracle_payload.get("oracle_confidence", 0.0)), 6),
+        "top_factors": list(oracle_payload.get("top_factors", [])),
         "decision": final_action,
         "reward": round(float(final_result["reward"]), 6),
         "oracle_score": round(float(final_result["info"].get("oracle_score", 0.0)), 6),
@@ -250,6 +300,9 @@ def main() -> None:
         for item in results:
             public_item = {
                 "risk_score": item["risk_score"],
+                "oracle_risk": item["oracle_risk"],
+                "oracle_confidence": item["oracle_confidence"],
+                "top_factors": item["top_factors"],
                 "decision": item["decision"],
                 "reward": item["reward"],
                 "oracle_score": item["oracle_score"],

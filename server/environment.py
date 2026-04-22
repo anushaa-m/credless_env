@@ -107,6 +107,8 @@ class CreditAnalystEnvironment(Environment):
             conversation_history=list(self._conversation),
             action_history=list(self.trajectory),
             market_visible=self._market_visible,
+            market_queried=self._market_visible,
+            fraud_checked=bool(self._fraud_flags),
             market_state=market_state,
             current_policy=dict(self._current_policy),
             compliance_history=list(self._auditor_compliance_log[-3:]),
@@ -151,6 +153,19 @@ class CreditAnalystEnvironment(Environment):
 
     def last_info(self) -> Dict[str, Any]:
         return dict(self._last_info)
+
+    @property
+    def revealed_features(self) -> Dict[str, float]:
+        return {
+            field: round(float(payload.get("value", 0.0)), 6)
+            for field, payload in self._revealed_fields.items()
+        }
+
+    def oracle_features(self) -> Dict[str, float]:
+        return dict(self.revealed_features)
+
+    def current_feature_snapshot(self) -> Dict[str, float]:
+        return dict(self._current_features())
 
     def _current_features(self) -> Dict[str, float]:
         return {

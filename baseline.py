@@ -16,7 +16,7 @@ BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 RUNS = int(os.getenv("BASELINE_RUNS", "5"))
 MIN_SCORE = 0.01
 MAX_SCORE = 0.99
-MAX_STEPS = 1
+MAX_STEPS = 8
 REQUEST_PRIORITY = [
     "total_delinquency_score",
     "overdraft_risk",
@@ -31,6 +31,23 @@ REQUEST_PRIORITY = [
 
 def strict_score(value: float) -> float:
     return round(min(MAX_SCORE, max(MIN_SCORE, float(value))), 4)
+
+
+def oracle_risk(payload: dict) -> float:
+    return float(payload.get("oracle_risk", 0.0) or 0.0)
+
+
+def oracle_confidence(payload: dict) -> float:
+    return float(payload.get("oracle_confidence", 0.0) or 0.0)
+
+
+def oracle_factor_names(payload: dict) -> list[str]:
+    top_factors = payload.get("top_factors", []) or []
+    names: list[str] = []
+    for item in top_factors:
+        if isinstance(item, list) and item:
+            names.append(str(item[0]))
+    return names
 
 
 def profile_values(obs: dict) -> dict:
@@ -80,12 +97,20 @@ def estimate_default_risk(fields: dict, market_index: float) -> float:
     return max(0.0, min(1.0, risk))
 
 
-def build_terminal_action(obs: dict, task: str) -> dict:
+def build_terminal_action(obs: dict, payload: dict, task: str) -> dict:
     fields = profile_values(obs)
     market = obs.get("market_state") or {}
     market_index = float(market.get("default_risk_index", 1.0))
-    risk = estimate_default_risk(fields, market_index)
+    heuristic_risk = estimate_default_risk(fields, market_index)
+    model_risk = oracle_risk(payload)
+    confidence = oracle_confidence(payload)
+    risk = 0.60 * model_risk + 0.40 * heuristic_risk if model_risk > 0.0 else heuristic_risk
 
+    if task == "adaptive_inquiry" and confidence < 0.60:
+        return {
+            "action_type": "escalate",
+            "reasoning": "Oracle confidence is low after investigation; escalating for manual review.",
+        }
     if risk < 0.35:
         decision = "approve"
     elif risk < 0.6:
@@ -95,35 +120,43 @@ def build_terminal_action(obs: dict, task: str) -> dict:
 
     return {
         "action_type": decision,
-        "reasoning": "Decision based on revealed repayment, burden, and market signals.",
+        "reasoning": (
+            f"Decision based on oracle_risk={model_risk:.3f}, "
+            f"oracle_confidence={confidence:.3f}, and revealed repayment signals."
+        ),
     }
 
 
-def baseline_action(obs: dict, task: str) -> dict:
-    del task
+def baseline_action(payload: dict, task: str) -> dict:
+    obs = payload.get("observation", payload)
     profile = obs.get("applicant", {}).get("profile", {})
     missing_fields = list(obs.get("applicant", {}).get("missing_fields", []))
     required_fields = list((obs.get("current_policy") or {}).get("required_fields", []))
+    factor_names = oracle_factor_names(payload)
 
     for field in required_fields:
         if field in missing_fields:
+            return {"action_type": "request_info", "params": {"field": field}}
+
+    for field in factor_names:
+        if field in missing_fields and field not in profile:
             return {"action_type": "request_info", "params": {"field": field}}
 
     for field in REQUEST_PRIORITY:
         if field in missing_fields and field not in profile:
             return {"action_type": "request_info", "params": {"field": field}}
 
-    if not obs.get("market_visible", False):
+    if not obs.get("market_visible", False) and oracle_confidence(payload) < 0.85:
         return {"action_type": "query_market"}
 
-    if detect_fraud(obs) and not obs.get("fraud_flags_raised"):
+    if (detect_fraud(obs) or oracle_risk(payload) > 0.72) and not obs.get("fraud_flags_raised"):
         return {
             "action_type": "flag_fraud",
-            "params": {"reason": "transaction inconsistency and low-confidence income profile"},
-            "reasoning": "Potential fraud indicators detected from observed profile.",
+            "params": {"reason": "transaction inconsistency, elevated oracle risk, or low-confidence profile"},
+            "reasoning": "Potential fraud indicators detected from observed profile and oracle risk signal.",
         }
 
-    return build_terminal_action(obs, task)
+    return build_terminal_action(obs, payload, task)
 
 
 def run_episode(task: str, retries: int = 2) -> float:
@@ -131,20 +164,21 @@ def run_episode(task: str, retries: int = 2) -> float:
         try:
             response = requests.post(f"{BASE_URL}/reset", json={"task_name": task}, timeout=30)
             response.raise_for_status()
-            obs = response.json().get("observation", response.json())
+            payload = response.json()
+            obs = payload.get("observation", payload)
 
             steps = 0
-            done = bool(obs.get("done", False))
+            done = bool(payload.get("done", False))
             final_reward = MIN_SCORE
-            while not done and steps < 8:
+            while not done and steps < MAX_STEPS:
                 steps += 1
-                action = baseline_action(obs, task)
+                action = baseline_action(payload, task)
                 response = requests.post(f"{BASE_URL}/step", json=action, timeout=30)
                 response.raise_for_status()
-                result = response.json()
-                obs = result.get("observation", obs)
-                done = bool(result.get("done", False))
-                final_reward = float(result.get("reward", MIN_SCORE))
+                payload = response.json()
+                obs = payload.get("observation", obs)
+                done = bool(payload.get("done", False))
+                final_reward = float(payload.get("reward", MIN_SCORE))
             return strict_score(final_reward)
         except Exception:
             if attempt == retries:

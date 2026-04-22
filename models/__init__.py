@@ -28,6 +28,8 @@ class FinVerseObservation(Observation):
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
     action_history: List[Dict[str, Any]] = Field(default_factory=list)
     market_visible: bool = Field(default=False)
+    market_queried: bool = Field(default=False)
+    fraud_checked: bool = Field(default=False)
     market_state: Optional[Dict[str, Any]] = Field(default=None)
     current_policy: Dict[str, Any] = Field(default_factory=dict)
     compliance_history: List[float] = Field(default_factory=list)

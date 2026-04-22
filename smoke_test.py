@@ -14,23 +14,30 @@ def assert_ok(response, label: str) -> dict:
 
 def run_multistep_episode(task_name: str) -> None:
     reset_payload = assert_ok(client.post("/reset", json={"task_name": task_name}), "reset")
+    reset_obs = reset_payload["observation"]
     assert reset_payload["done"] is False
-    assert reset_payload["step"] == 0
-    assert reset_payload["action_history"] == []
+    assert reset_payload["oracle_risk"] >= 0.0
+    assert isinstance(reset_payload["top_factors"], list)
+    assert reset_obs["step"] == 0
+    assert reset_obs["action_history"] == []
 
-    request_field = reset_payload["applicant"]["missing_fields"][0]
+    request_field = reset_obs["applicant"]["missing_fields"][0]
     first_step = assert_ok(
         client.post("/step", json={"action_type": "request_info", "params": {"field": request_field}}),
         "request_info",
     )
     assert first_step["done"] is False
     assert first_step["reward"] > 0.0
+    assert first_step["explanation"] == first_step["observation"]["message"]
+    assert all(isinstance(item, list) and len(item) == 2 for item in first_step["top_factors"])
     assert first_step["observation"]["step"] == 1
     assert len(first_step["observation"]["action_history"]) == 1
+    assert first_step["observation"]["market_queried"] is False
 
     second_step = assert_ok(client.post("/step", json={"action_type": "query_market"}), "query_market")
     assert second_step["done"] is False
     assert second_step["observation"]["market_visible"] is True
+    assert second_step["observation"]["market_queried"] is True
     assert len(second_step["observation"]["action_history"]) == 2
 
     final_step = assert_ok(
@@ -42,12 +49,14 @@ def run_multistep_episode(task_name: str) -> None:
     )
     assert final_step["done"] is True
     assert final_step["observation"]["done"] is True
+    assert final_step["oracle_confidence"] >= 0.0
+    assert final_step["explanation"] == final_step["observation"]["message"]
     assert len(final_step["observation"]["action_history"]) == 3
 
 
 def run_timeout_episode(task_name: str) -> None:
     reset_payload = assert_ok(client.post("/reset", json={"task_name": task_name}), "reset-timeout")
-    first_missing = reset_payload["applicant"]["missing_fields"][0]
+    first_missing = reset_payload["observation"]["applicant"]["missing_fields"][0]
 
     for step_index in range(1, 8):
         payload = {"action_type": "request_info", "params": {"field": first_missing}}
