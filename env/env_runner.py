@@ -7,7 +7,7 @@ It is designed to stay compatible with future OpenEnv wrapping.
 Key points:
   - root `inference.py` remains the standalone FinVerse pipeline entrypoint
   - this file owns environment interaction only
-  - environment actions are plain uppercase strings: APPROVE or REJECT
+  - environment actions follow the multi-step JSON action contract
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ REQUEST_PRIORITY = [
 ]
 
 SYSTEM_PROMPT = (
-    "You are a binary credit decision agent. "
-    "Return exactly one token: APPROVE or REJECT."
+    "You are a credit decision agent for a multi-step RL environment. "
+    "Return a single JSON action matching the allowed schema."
 )
 
 client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN) if HF_TOKEN else None
@@ -98,13 +98,45 @@ def _estimate_default_risk(fields: Dict[str, float], market_index: float) -> flo
     return max(0.0, min(1.0, risk))
 
 
-def policy_action(observation: Dict[str, object], task_name: str) -> str:
-    del task_name
+def build_terminal_action(observation: Dict[str, object]) -> Dict[str, object]:
     fields = profile_values(observation)
     market_state = observation.get("market_state") or {}
     market_index = float(market_state.get("default_risk_index", 1.0))
     default_risk = _estimate_default_risk(fields, market_index)
-    return "REJECT" if default_risk >= 0.50 else "APPROVE"
+    decision = "deny" if default_risk >= 0.50 else "approve"
+    return {
+        "action_type": decision,
+        "reasoning": "Decision based on revealed field values and market context.",
+    }
+
+
+def policy_action(observation: Dict[str, object], task_name: str) -> Dict[str, object]:
+    del task_name
+    profile = observation.get("applicant", {}).get("profile", {})
+    missing_fields = list(observation.get("applicant", {}).get("missing_fields", []))
+    required_fields = list((observation.get("current_policy") or {}).get("required_fields", []))
+
+    for field in required_fields:
+        if field in missing_fields:
+            return {"action_type": "request_info", "params": {"field": field}}
+
+    for field in REQUEST_PRIORITY:
+        if field in missing_fields and field not in profile:
+            return {"action_type": "request_info", "params": {"field": field}}
+
+    if not observation.get("market_visible", False):
+        return {"action_type": "query_market"}
+
+    confidence = profile_confidence(observation)
+    suspicious = any((1.0 - value) > 0.25 for value in confidence.values())
+    if suspicious and not observation.get("fraud_flags_raised"):
+        return {
+            "action_type": "flag_fraud",
+            "params": {"reason": "low-confidence profile values require manual verification"},
+            "reasoning": "Low-confidence data suggests fraud review before decision.",
+        }
+
+    return build_terminal_action(observation)
 
 
 @dataclass
@@ -140,7 +172,7 @@ class EnvironmentRunner:
             flush=True,
         )
 
-    def call_model(self, observation: Dict[str, object], task_name: str) -> str:
+    def call_model(self, observation: Dict[str, object], task_name: str) -> Dict[str, object]:
         if client is None:
             return policy_action(observation, task_name)
 
@@ -155,9 +187,9 @@ class EnvironmentRunner:
                 max_tokens=180,
             )
             content = (completion.choices[0].message.content or "").strip()
-            action = sanitize_log_value(content).upper()
-            if action not in {"APPROVE", "REJECT"}:
-                raise ValueError("Model response was not APPROVE/REJECT")
+            action = json.loads(content)
+            if not isinstance(action, dict) or "action_type" not in action:
+                raise ValueError("Model response was not a valid action object")
             return action
         except Exception:
             return policy_action(observation, task_name)
@@ -184,7 +216,7 @@ class EnvironmentRunner:
             while not done and steps_taken < MAX_STEPS:
                 steps_taken += 1
                 action = self.call_model(observation, task_name)
-                action_str = sanitize_log_value(action)
+                action_str = format_action(action)
                 error = None
 
                 try:

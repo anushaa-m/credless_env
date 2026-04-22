@@ -1,0 +1,2 @@
+{"risk_score": 0.0, "decision": "APPROVE", "reward": 1.09, "oracle_score": 0.8224, "explanation": "Decision=approve tier=low_risk with default_risk=0.1776. Dominant factor: payment_reliability (supports approval)."}
+{"risk_score": 0.0, "decision": "APPROVE", "reward": -1.11, "oracle_score": 0.4253, "explanation": "Decision=deny tier=high_risk with default_risk=0.5747. Dominant factor: payment_reliability (supports approval)."}

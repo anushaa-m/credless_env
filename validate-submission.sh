@@ -57,6 +57,20 @@ PING_URL="${PING_URL%/}"
 export PING_URL
 PASS=0
 
+PYTHON_BIN="python"
+OPENENV_BIN="openenv"
+if [ -x "$REPO_DIR/venv/Scripts/python.exe" ]; then
+  PYTHON_BIN="$REPO_DIR/venv/Scripts/python.exe"
+elif [ -x "$REPO_DIR/venv/bin/python" ]; then
+  PYTHON_BIN="$REPO_DIR/venv/bin/python"
+fi
+
+if [ -x "$REPO_DIR/venv/Scripts/openenv.exe" ]; then
+  OPENENV_BIN="$REPO_DIR/venv/Scripts/openenv.exe"
+elif [ -x "$REPO_DIR/venv/bin/openenv" ]; then
+  OPENENV_BIN="$REPO_DIR/venv/bin/openenv"
+fi
+
 log()  { printf "[%s] %b\n" "$(date -u +%H:%M:%S)" "$*"; }
 pass() { log "${GREEN}PASSED${NC} -- $1"; PASS=$((PASS + 1)); }
 fail() { log "${RED}FAILED${NC} -- $1"; }
@@ -125,16 +139,34 @@ else
   stop_at "Step 2"
 fi
 
-log "${BOLD}Step 3/3: Running openenv validate${NC} ..."
+log "${BOLD}Step 3/4: Running local smoke test${NC} ..."
 
-if ! command -v openenv &>/dev/null; then
+if [ -x "$PYTHON_BIN" ] || command -v "$PYTHON_BIN" &>/dev/null; then
+  SMOKE_OK=false
+  SMOKE_OUTPUT=$(cd "$REPO_DIR" && "$PYTHON_BIN" smoke_test.py 2>&1) && SMOKE_OK=true
+  if [ "$SMOKE_OK" = true ]; then
+    pass "smoke_test.py passed"
+  else
+    fail "smoke_test.py failed"
+    printf "%s\n" "$SMOKE_OUTPUT"
+    stop_at "Step 3"
+  fi
+else
+  fail "python command not found"
+  hint "Activate the project environment before running validation."
+  stop_at "Step 3"
+fi
+
+log "${BOLD}Step 4/4: Running openenv validate${NC} ..."
+
+if ! { [ -x "$OPENENV_BIN" ] || command -v "$OPENENV_BIN" &>/dev/null; }; then
   fail "openenv command not found"
   hint "Install it: pip install openenv-core"
   stop_at "Step 3"
 fi
 
 VALIDATE_OK=false
-VALIDATE_OUTPUT=$(cd "$REPO_DIR" && openenv validate 2>&1) && VALIDATE_OK=true
+VALIDATE_OUTPUT=$(cd "$REPO_DIR" && "$OPENENV_BIN" validate 2>&1) && VALIDATE_OK=true
 
 if [ "$VALIDATE_OK" = true ]; then
   pass "openenv validate passed"
@@ -147,7 +179,7 @@ fi
 
 printf "\n"
 printf "${BOLD}========================================${NC}\n"
-printf "${GREEN}${BOLD}  All 3/3 checks passed!${NC}\n"
+printf "${GREEN}${BOLD}  All 4/4 checks passed!${NC}\n"
 printf "${GREEN}${BOLD}  Your submission is ready to submit.${NC}\n"
 printf "${BOLD}========================================${NC}\n"
 printf "\n"

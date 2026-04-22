@@ -11,7 +11,8 @@ import numpy as np
 import pandas as pd
 
 from data.synthetic_generator import generate_synthetic_data
-from pipeline.main_pipeline import CreditDecisionEnvironment, CreditDecisionPipeline, _load_agent2_module
+from pipeline.main_pipeline import CreditDecisionPipeline, _load_agent2_module
+from server.environment import CreditAnalystEnvironment
 
 
 DEFAULT_SEED = int(os.getenv("CREDLESS_SEED", "42"))
@@ -24,6 +25,17 @@ DEFAULT_MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct")
 DEFAULT_API_BASE_URL = os.getenv("API_BASE_URL")
 DEFAULT_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
 MAX_RUNTIME_SECONDS = 20 * 60
+MAX_EPISODE_STEPS = 8
+REQUEST_PRIORITY = [
+    "total_delinquency_score",
+    "overdraft_risk",
+    "medical_stress_score",
+    "debt_burden_score",
+    "payment_reliability",
+    "income_capacity_score",
+    "employment_stability",
+    "account_maturity",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,26 +125,89 @@ def _build_agent2(args: argparse.Namespace, pipeline: CreditDecisionPipeline) ->
     return pipeline.agent2
 
 
-def _run_one_local(agent1: Any, agent2: Any, record: Mapping[str, Any]) -> dict[str, Any]:
-    features = {str(key).strip().lower().replace(" ", "_"): value for key, value in dict(record).items()}
+def _profile_features(observation: Mapping[str, Any], *, defaults: Mapping[str, float] | None = None) -> dict[str, float]:
+    features = dict(defaults or {})
+    profile = observation.get("applicant", {}).get("profile", {})
+    for field, payload in profile.items():
+        features[str(field)] = float(payload.get("value", 0.0))
+    return features
+
+
+def _choose_action(observation: Mapping[str, Any], agent1: Any, agent2: Any) -> tuple[dict[str, Any], float, list[dict[str, Any]]]:
+    missing_fields = list(observation.get("applicant", {}).get("missing_fields", []))
+    required_fields = list((observation.get("current_policy") or {}).get("required_fields", []))
+    profile = observation.get("applicant", {}).get("profile", {})
+
+    for field in required_fields:
+        if field in missing_fields:
+            return {"action_type": "request_info", "params": {"field": field}}, 0.0, []
+
+    for field in REQUEST_PRIORITY:
+        if field in missing_fields and field not in profile:
+            return {"action_type": "request_info", "params": {"field": field}}, 0.0, []
+
+    if not observation.get("market_visible", False):
+        return {"action_type": "query_market"}, 0.0, []
+
+    confidence = {
+        key: float(value.get("confidence", 0.0))
+        for key, value in profile.items()
+        if isinstance(value, Mapping)
+    }
+    if confidence and any((1.0 - value) > 0.25 for value in confidence.values()) and not observation.get("fraud_flags_raised"):
+        return {
+            "action_type": "flag_fraud",
+            "params": {"reason": "low-confidence profile values require manual verification"},
+            "reasoning": "Potential fraud indicators identified from observed applicant data.",
+        }, 0.0, []
+
+    features = _profile_features(observation, defaults={field: 0.5 for field in getattr(agent1, "feature_order", [])})
     risk_score = float(agent1.predict(features))
     shap_info = list(agent1.explain(features))
 
     if hasattr(agent2, "generate_with_metadata"):
         policy_output = agent2.generate_with_metadata(features, risk_score, shap_info)
-        decision = str(policy_output.decision)
+        decision = str(policy_output.decision).strip().upper()
+        reasoning = getattr(policy_output, "raw_text", "") or "Decision from agent 2 policy."
     else:
-        decision = str(agent2.generate_decision(features, risk_score, shap_info))
+        decision = str(agent2.generate_decision(features, risk_score, shap_info)).strip().upper()
+        reasoning = "Decision from agent 2 policy."
 
-    env = CreditDecisionEnvironment(features)
-    result = env.step(decision)
+    terminal_action = "approve" if decision == "APPROVE" else "deny"
+    return {"action_type": terminal_action, "reasoning": reasoning}, risk_score, shap_info
+
+
+def _run_one_local(agent1: Any, agent2: Any, episode_seed: int) -> dict[str, Any]:
+    env = CreditAnalystEnvironment()
+    observation = env.reset(seed=episode_seed)
+    done = bool(observation.get("done", False))
+    risk_score = 0.0
+    shap_info: list[dict[str, Any]] = []
+    final_result: dict[str, Any] = {"reward": 0.0, "done": done, "info": {}}
+    final_action = "ESCALATE"
+
+    steps = 0
+    while not done and steps < MAX_EPISODE_STEPS:
+        steps += 1
+        action, maybe_risk, maybe_shap = _choose_action(observation, agent1, agent2)
+        if maybe_shap:
+            risk_score = maybe_risk
+            shap_info = maybe_shap
+            final_action = str(action["action_type"]).upper()
+        result = env.step(action)
+        observation = result.get("observation", observation)
+        done = bool(result.get("done", False))
+        final_result = result
+
     return {
         "risk_score": round(risk_score, 6),
-        "decision": decision,
-        "reward": round(float(result["reward"]), 6),
-        "oracle_score": round(float(result["info"].get("oracle_score", 0.0)), 6),
-        "explanation": str(result["info"].get("explanation", "")),
-        "oracle_decision": str(result["info"].get("oracle_decision", "")),
+        "decision": final_action,
+        "reward": round(float(final_result["reward"]), 6),
+        "oracle_score": round(float(final_result["info"].get("oracle_score", 0.0)), 6),
+        "explanation": str(final_result["info"].get("explanation", "")),
+        "oracle_decision": str(final_result["info"].get("oracle_decision", "")),
+        "steps": steps,
+        "action_history": list(observation.get("action_history", [])),
     }
 
 
@@ -162,10 +237,10 @@ def main() -> None:
     agent2 = _build_agent2(args, pipeline)
 
     results: list[dict[str, Any]] = []
-    for record in frame.to_dict(orient="records"):
+    for episode_index, _record in enumerate(frame.to_dict(orient="records")):
         if time.time() - start_time > MAX_RUNTIME_SECONDS:
             raise TimeoutError(f"Inference exceeded the {MAX_RUNTIME_SECONDS}s runtime budget.")
-        sample_result = _run_one_local(agent1, agent2, record)
+        sample_result = _run_one_local(agent1, agent2, args.seed + episode_index)
         results.append(sample_result)
 
     summary = _aggregate_metrics(results)

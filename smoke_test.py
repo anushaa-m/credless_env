@@ -1,49 +1,70 @@
-import requests
+from fastapi.testclient import TestClient
 
-BASE = "http://127.0.0.1:7860"
+from server.app import app
 
 
-def safe_json(response, label=""):
+client = TestClient(app)
+
+
+def assert_ok(response, label: str) -> dict:
     if response.status_code != 200:
-        print(f"\nFAILED [{label}] status={response.status_code}")
-        print(response.text[:500])
-        raise SystemExit(1)
+        raise AssertionError(f"{label} failed: {response.status_code} {response.text[:300]}")
     return response.json()
 
 
-def run_task(task_name: str, final_action: str) -> None:
-    print("=" * 50)
-    print(f"TEST: {task_name}")
-    print("=" * 50)
+def run_multistep_episode(task_name: str) -> None:
+    reset_payload = assert_ok(client.post("/reset", json={"task_name": task_name}), "reset")
+    assert reset_payload["done"] is False
+    assert reset_payload["step"] == 0
+    assert reset_payload["action_history"] == []
 
-    response = requests.post(f"{BASE}/reset", json={"task_name": task_name})
-    data = safe_json(response, "reset")
-    obs = data["observation"]
-    print(f"Reset OK | task={obs['task_name']} | applicant={obs['applicant']['applicant_id']}")
-    print(f"Visible={list(obs['applicant']['profile'].keys())[:6]} | missing={len(obs['applicant']['missing_fields'])}")
+    request_field = reset_payload["applicant"]["missing_fields"][0]
+    first_step = assert_ok(
+        client.post("/step", json={"action_type": "request_info", "params": {"field": request_field}}),
+        "request_info",
+    )
+    assert first_step["done"] is False
+    assert first_step["reward"] > 0.0
+    assert first_step["observation"]["step"] == 1
+    assert len(first_step["observation"]["action_history"]) == 1
 
-    response = requests.post(f"{BASE}/step", json=final_action)
-    result = safe_json(response, "final")
-    print(f"Final OK | done={result['done']} | reward={result['reward']}")
-    print(f"Info: {result['info']}")
-    print()
+    second_step = assert_ok(client.post("/step", json={"action_type": "query_market"}), "query_market")
+    assert second_step["done"] is False
+    assert second_step["observation"]["market_visible"] is True
+    assert len(second_step["observation"]["action_history"]) == 2
+
+    final_step = assert_ok(
+        client.post(
+            "/step",
+            json={"action_type": "approve", "reasoning": "Approving after reviewing applicant and market data."},
+        ),
+        "approve",
+    )
+    assert final_step["done"] is True
+    assert final_step["observation"]["done"] is True
+    assert len(final_step["observation"]["action_history"]) == 3
 
 
-run_task(
-    "binary_decision",
-    "APPROVE",
-)
+def run_timeout_episode(task_name: str) -> None:
+    reset_payload = assert_ok(client.post("/reset", json={"task_name": task_name}), "reset-timeout")
+    first_missing = reset_payload["applicant"]["missing_fields"][0]
 
-run_task(
-    "risk_tiering",
-    "APPROVE",
-)
+    for step_index in range(1, 8):
+        payload = {"action_type": "request_info", "params": {"field": first_missing}}
+        result = assert_ok(client.post("/step", json=payload), f"timeout-step-{step_index}")
+        if step_index < 8:
+            assert result["observation"]["step"] == step_index
+        if step_index < 8 and step_index < result["observation"]["max_steps"]:
+            assert result["done"] is False
 
-run_task(
-    "adaptive_inquiry",
-    "REJECT",
-)
+    timeout_result = assert_ok(client.post("/step", json={"action_type": "query_market"}), "timeout-final")
+    assert timeout_result["done"] is True
+    assert "timeout" in timeout_result["info"].get("penalties_applied", {})
 
-print("=" * 50)
-print("ALL TESTS PASSED")
-print("=" * 50)
+
+for task in ("binary_decision", "risk_tiering", "adaptive_inquiry"):
+    run_multistep_episode(task)
+
+run_timeout_episode("binary_decision")
+
+print("Smoke tests passed")

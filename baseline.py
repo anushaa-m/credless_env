@@ -17,6 +17,16 @@ RUNS = int(os.getenv("BASELINE_RUNS", "5"))
 MIN_SCORE = 0.01
 MAX_SCORE = 0.99
 MAX_STEPS = 1
+REQUEST_PRIORITY = [
+    "total_delinquency_score",
+    "overdraft_risk",
+    "medical_stress_score",
+    "debt_burden_score",
+    "payment_reliability",
+    "income_capacity_score",
+    "employment_stability",
+    "account_maturity",
+]
 
 
 def strict_score(value: float) -> float:
@@ -70,23 +80,50 @@ def estimate_default_risk(fields: dict, market_index: float) -> float:
     return max(0.0, min(1.0, risk))
 
 
-def build_final_action(obs: dict, task: str) -> str:
+def build_terminal_action(obs: dict, task: str) -> dict:
     fields = profile_values(obs)
     market = obs.get("market_state") or {}
     market_index = float(market.get("default_risk_index", 1.0))
     risk = estimate_default_risk(fields, market_index)
 
     if risk < 0.35:
-        decision = "APPROVE"
+        decision = "approve"
     elif risk < 0.6:
-        decision = "APPROVE"
+        decision = "approve"
     else:
-        decision = "REJECT"
-    return decision
+        decision = "deny"
+
+    return {
+        "action_type": decision,
+        "reasoning": "Decision based on revealed repayment, burden, and market signals.",
+    }
 
 
-def baseline_action(obs: dict, task: str) -> str:
-    return build_final_action(obs, task)
+def baseline_action(obs: dict, task: str) -> dict:
+    del task
+    profile = obs.get("applicant", {}).get("profile", {})
+    missing_fields = list(obs.get("applicant", {}).get("missing_fields", []))
+    required_fields = list((obs.get("current_policy") or {}).get("required_fields", []))
+
+    for field in required_fields:
+        if field in missing_fields:
+            return {"action_type": "request_info", "params": {"field": field}}
+
+    for field in REQUEST_PRIORITY:
+        if field in missing_fields and field not in profile:
+            return {"action_type": "request_info", "params": {"field": field}}
+
+    if not obs.get("market_visible", False):
+        return {"action_type": "query_market"}
+
+    if detect_fraud(obs) and not obs.get("fraud_flags_raised"):
+        return {
+            "action_type": "flag_fraud",
+            "params": {"reason": "transaction inconsistency and low-confidence income profile"},
+            "reasoning": "Potential fraud indicators detected from observed profile.",
+        }
+
+    return build_terminal_action(obs, task)
 
 
 def run_episode(task: str, retries: int = 2) -> float:
@@ -97,13 +134,18 @@ def run_episode(task: str, retries: int = 2) -> float:
             obs = response.json().get("observation", response.json())
 
             steps = 0
-            while steps < MAX_STEPS:
+            done = bool(obs.get("done", False))
+            final_reward = MIN_SCORE
+            while not done and steps < 8:
                 steps += 1
                 action = baseline_action(obs, task)
                 response = requests.post(f"{BASE_URL}/step", json=action, timeout=30)
                 response.raise_for_status()
                 result = response.json()
-                return strict_score(float(result.get("reward", MIN_SCORE)))
+                obs = result.get("observation", obs)
+                done = bool(result.get("done", False))
+                final_reward = float(result.get("reward", MIN_SCORE))
+            return strict_score(final_reward)
         except Exception:
             if attempt == retries:
                 return MIN_SCORE
