@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from data.synthetic_generator import generate_synthetic_data
-from pipeline.main_pipeline import CreditDecisionPipeline
+from pipeline.main_pipeline import CreditDecisionEnvironment, CreditDecisionPipeline
 from rl.reward_logger import RewardLogger
 from rl.rollout_collector import RolloutCollector, Trajectory
 
@@ -45,6 +45,13 @@ class RLTrainingConfig:
     require_trl: bool = False
     base_model_name: str = "Qwen/Qwen2.5-0.5B-Instruct"
     learning_rate: float = 1e-5
+    max_seq_length: int = 512
+    ppo_batch_size: int = 4
+    ppo_mini_batch_size: int = 2
+    gradient_accumulation_steps: int = 2
+    lora_rank: int = 32
+    lora_alpha: int = 32
+    max_new_tokens: int = 4
 
 
 class RLTrainer:
@@ -61,6 +68,91 @@ class RLTrainer:
         self.collector = RolloutCollector(self.pipeline, reward_logger=self.reward_logger)
         self.agent2_module = _load_agent2_module()
         self.training_history: list[dict[str, Any]] = []
+        self._trl_runtime: dict[str, Any] | None = None
+     
+    def build_prompt(
+        self,
+        features: Mapping[str, Any],
+        risk_score: float,
+        shap_info: list[Mapping[str, Any]] | None = None,
+    ) -> str:
+
+        features = dict(features or {})
+
+        # 🔥 PRIORITIZE IMPORTANT FEATURES
+        priority_keys = [
+            "age", "monthlyincome", "debtratio",
+            "numberofopencreditlinesandloans",
+            "numberoftimes90dayslate",
+            "avg_monthly_balance",
+            "overdraft_count",
+            "salary_credit_consistency",
+            "income_variability_score",
+        ]
+
+        priority_features = []
+        other_features = []
+
+        for k, v in features.items():
+            text = f"{k}: {round(float(v), 3)}" if isinstance(v, (int, float)) else f"{k}: {v}"
+            if k in priority_keys:
+                priority_features.append(text)
+            else:
+                other_features.append(text)
+
+        # limit size (IMPORTANT for PPO)
+        other_features = other_features[:15]
+
+        feature_text = "\n".join(priority_features + other_features)
+
+        # 🔥 SHAP (top 3 only)
+        shap_text = "\n".join([
+            f"{item['feature']} ({item['impact']})"
+            for item in (shap_info or [])[:3]
+            if "feature" in item and "impact" in item
+        ])
+
+        if not shap_text:
+            shap_text = "None"
+
+        return f"""
+Credit Risk Decision Task
+
+Risk Score: {risk_score:.3f}
+
+Key Features:
+{feature_text}
+
+Top Signals:
+{shap_text}
+
+Instruction:
+- Approve financially stable users
+- Reject high-risk or unstable users
+- Use BOTH risk score and features
+
+Answer ONLY:
+APPROVE or REJECT
+"""
+
+
+    def _build_ppo_records(self, trajectories: list[Trajectory]) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for trajectory in trajectories:
+            transition = trajectory.transitions[0]
+            records.append(
+                {
+                    "query": self.build_prompt(
+                        transition.observation.get("features", {}),
+                        transition.observation.get("risk_score", 0.5),
+                        transition.observation.get("shap_info", []),
+                    ),
+                    "response": "",
+                    "reward": float(transition.reward),
+                    "oracle_decision": str(trajectory.summary.get("oracle_decision", "REJECT")),
+                }
+            )
+        return records
 
     def train(self, users: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         users = list(users)
@@ -92,20 +184,20 @@ class RLTrainer:
                         trajectory.transitions[0].reward = float(trajectory.total_reward)
                         trajectory.summary["total_reward"] = float(trajectory.total_reward)
 
-            for trajectory in sanitized_trajectories:
-                decision = str(trajectory.summary["decision"])
-                reward = float(trajectory.total_reward)
-                oracle_decision = str(trajectory.summary["oracle_decision"])
-                agreement = int(decision == oracle_decision)
-                print(f"[DEBUG] Action: {decision}, Reward: {reward}")
-                print(f"[DEBUG] Oracle Decision: {oracle_decision}, Agreement: {agreement}")
-                trajectory_records.append({"action": decision, "reward": reward})
-
             all_trajectories.extend(sanitized_trajectories)
             self._update_policy(sanitized_trajectories)
 
             rewards = [trajectory.total_reward for trajectory in sanitized_trajectories]
             agreements = [int(trajectory.summary["agreement"]) for trajectory in sanitized_trajectories]
+            for trajectory in sanitized_trajectories:
+                decision = str(trajectory.summary["decision"])
+                reward = float(trajectory.total_reward)
+                oracle_decision = str(trajectory.summary["oracle_decision"])
+                agreement = int(trajectory.summary["agreement"])
+                print(f"[DEBUG] Action: {decision}, Reward: {reward}")
+                print(f"[DEBUG] Oracle Decision: {oracle_decision}, Agreement: {agreement}")
+                trajectory_records.append({"action": decision, "reward": reward})
+
             self.training_history.append(
                 {
                     "batch_start": batch_start,
@@ -145,6 +237,11 @@ class RLTrainer:
             transition.action = decision
             transition.reward = reward
             transition.done = True
+            transition.metadata["prompt"] = self.build_prompt(
+                transition.observation.get("features", {}),
+                float(transition.observation.get("risk_score", 0.5)),
+                transition.observation.get("shap_info", []) or [],
+            )
             trajectory.total_reward = reward
             trajectory.done = True
             trajectory.summary["decision"] = decision
@@ -173,7 +270,7 @@ class RLTrainer:
 
     def _update_policy(self, trajectories: list[Trajectory]) -> None:
         algorithm = self.config.algorithm.lower()
-        if algorithm in {"ppo", "grpo"} and self._trl_backend_available():
+        if algorithm == "ppo" and self._trl_backend_available():
             try:
                 self._update_policy_with_trl(trajectories)
                 return
@@ -184,73 +281,183 @@ class RLTrainer:
 
     def _trl_backend_available(self) -> bool:
         try:
+            import torch  # noqa: F401
             import trl  # noqa: F401
             import unsloth  # noqa: F401
-            import datasets  # noqa: F401
             import transformers  # noqa: F401
         except ImportError:
             return False
         return True
 
-    def _update_policy_with_trl(self, trajectories: list[Trajectory]) -> None:
-        from datasets import Dataset
+    def _get_trl_runtime(self) -> dict[str, Any]:
+        if self._trl_runtime is not None:
+            return self._trl_runtime
+
+        import torch
         from transformers import AutoTokenizer
+        from trl import PPOConfig, PPOTrainer
         from unsloth import FastLanguageModel
-
-        try:
-            from trl import GRPOConfig, GRPOTrainer
-        except ImportError as exc:
-            raise RuntimeError("TRL GRPO backend is unavailable in this environment.") from exc
-
-        records = []
-        for trajectory in trajectories:
-            transition = trajectory.transitions[0]
-            records.append(
-                {
-                    "prompt": transition.metadata.get("prompt", ""),
-                    "features": json.dumps(transition.observation.get("features", {})),
-                    "reward": float(transition.reward),
-                    "preferred_action": str(transition.action),
-                }
-            )
-        dataset = Dataset.from_list(records)
 
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=self.config.base_model_name,
-            max_seq_length=512,
+            max_seq_length=self.config.max_seq_length,
             load_in_4bit=True,
         )
-        tokenizer = AutoTokenizer.from_pretrained(self.config.base_model_name, use_fast=True)
-
-        def reward_fn(prompts, completions, features, reward, preferred_action, **_: Any):
-            rewards: list[float] = []
-            for completion, reward_value, target_action in zip(completions, reward, preferred_action):
-                decision = self.agent2_module.extract_decision(str(completion))
-                if decision == "INVALID":
-                    decision = "REJECT"
-                rewards.append(float(reward_value) if decision == str(target_action) else max(float(reward_value) - 1.0, -1.0))
-            return rewards
-
-        training_args = GRPOConfig(
-            output_dir=str(ROOT / "agent2-decision-base" / "checkpoints" / "rl"),
-            learning_rate=self.config.learning_rate,
-            per_device_train_batch_size=max(1, min(self.config.batch_size, 4)),
-            num_generations=2,
-            max_prompt_length=384,
-            max_completion_length=4,
-            logging_steps=1,
-            save_strategy="no",
-            report_to=[],
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=self.config.lora_rank,
+            target_modules=["q_proj", "v_proj"],
+            lora_alpha=self.config.lora_alpha,
+            lora_dropout=0,
         )
-        trainer = GRPOTrainer(
+        tokenizer = AutoTokenizer.from_pretrained(self.config.base_model_name, use_fast=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        ppo_config = PPOConfig(
+            learning_rate=self.config.learning_rate,
+            batch_size=self.config.ppo_batch_size,
+            mini_batch_size=self.config.ppo_mini_batch_size,
+            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
+        )
+        trainer = PPOTrainer(
             model=model,
             tokenizer=tokenizer,
-            args=training_args,
-            train_dataset=dataset,
-            reward_funcs=reward_fn,
+            config=ppo_config,
         )
-        trainer.train()
 
+        self._trl_runtime = {
+            "torch": torch,
+            "trainer": trainer,
+            "tokenizer": tokenizer,
+            "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        }
+        return self._trl_runtime
+
+    def _update_policy_with_trl(self, trajectories: list[Trajectory]) -> None:
+        runtime = self._get_trl_runtime()
+        torch = runtime["torch"]
+        trainer = runtime["trainer"]
+        tokenizer = runtime["tokenizer"]
+        device = runtime["device"]
+
+        # 🔥 Batch buffers
+        queries = []
+        responses = []
+        rewards = []
+        batch_size = 32
+
+        # 🔥 Metrics tracking
+        total_rewards_log = []
+        agreements_log = []
+        decisions_log = []
+
+        records = self._build_ppo_records(trajectories)
+
+        for trajectory, record in zip(trajectories, records):
+            transition = trajectory.transitions[0]
+
+            features_dict = dict(transition.observation.get("features", {}))
+            prompt = record["query"]
+
+            # 🔹 Tokenize
+            query_tensor = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+
+            # 🔹 Generate response
+            generated = trainer.generate(
+                query_tensor,
+                max_new_tokens=self.config.max_new_tokens,
+                do_sample=True,
+                top_p=0.9,
+                temperature=0.8,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+
+            response_tensor = generated[:, query_tensor.shape[-1]:]
+            response_text = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
+
+            # 🔹 Extract decision
+            decision = self.agent2_module.extract_decision(response_text)
+            if decision == "INVALID":
+                decision = "REJECT"
+
+            # 🔹 Environment step
+            result = self.pipeline.run(features_dict)
+            if not isinstance(result, dict):
+                raise ValueError("Expected environment result to be a dict for PPO training.")
+
+            info = dict(result.get("info", {}))
+            oracle_score = float(info.get("oracle_score", 0.0))
+            oracle_decision = str(info.get("oracle_decision", "REJECT")).upper()
+
+            # 🔥 Hybrid reward
+            reward = (1.0 if decision == oracle_decision else -1.0) + 0.5 * oracle_score
+
+            # 🔥 Metrics logging
+            total_rewards_log.append(reward)
+            agreements_log.append(int(decision == oracle_decision))
+            decisions_log.append(decision)
+
+            # 🔥 Collect batch
+            queries.append(query_tensor[0])
+            responses.append(response_tensor[0])
+            rewards.append(float(reward))
+
+            # 🔥 Batch update
+            if len(queries) >= batch_size:
+                reward_tensor = torch.tensor(rewards, dtype=torch.float32, device=device)
+
+                # normalize rewards
+                reward_tensor = (reward_tensor - reward_tensor.mean()) / (reward_tensor.std() + 1e-8)
+
+                trainer.step(queries, responses, reward_tensor)
+
+                print(f"[PPO] Batch Reward Mean: {reward_tensor.mean().item():.4f}")
+                print(f"[PPO] Batch Reward Std: {reward_tensor.std().item():.4f}")
+
+                # reset batch
+                queries, responses, rewards = [], [], []
+
+            # 🔹 Update trajectory
+            transition.action = decision
+            transition.reward = float(reward)
+            transition.done = True
+            transition.info = info
+
+            trajectory.total_reward += float(reward)
+            trajectory.done = True
+            trajectory.summary["decision"] = decision
+            trajectory.summary["total_reward"] = float(trajectory.total_reward)
+            trajectory.summary["oracle_decision"] = oracle_decision
+            trajectory.summary["oracle_score"] = oracle_score
+            trajectory.summary["agreement"] = int(decision == oracle_decision)
+
+            # 🔹 Debug logs
+            print(f"[DEBUG] Action: {decision}, Reward: {reward}")
+            print(f"[DEBUG] Oracle Decision: {oracle_decision}, Agreement: {int(decision == oracle_decision)}")
+
+        # 🔥 FINAL leftover batch
+        if len(queries) > 0:
+            reward_tensor = torch.tensor(rewards, dtype=torch.float32, device=device)
+            reward_tensor = (reward_tensor - reward_tensor.mean()) / (reward_tensor.std() + 1e-8)
+
+            trainer.step(queries, responses, reward_tensor)
+
+            print(f"[PPO] Final Batch Reward Mean: {reward_tensor.mean().item():.4f}")
+
+        # 🔥 FINAL TRAINING SUMMARY
+        import numpy as np
+
+        if total_rewards_log:
+            avg_reward = np.mean(total_rewards_log)
+            agreement_rate = np.mean(agreements_log)
+            approve_rate = decisions_log.count("APPROVE") / len(decisions_log)
+
+            print("\n===== TRAINING SUMMARY =====")
+            print(f"Avg Reward: {avg_reward:.4f}")
+            print(f"Oracle Agreement: {agreement_rate:.4f}")
+            print(f"Approve Rate: {approve_rate:.4f}")
+           
     def _update_policy_lightweight(self, trajectories: list[Trajectory]) -> None:
         rewards = np.array([trajectory.total_reward for trajectory in trajectories], dtype=float)
         baseline = float(np.mean(rewards)) if len(rewards) else 0.0

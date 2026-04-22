@@ -1,0 +1,41 @@
+{
+  "episodes": 2,
+  "algorithm": "ppo",
+  "mean_reward": 0.4132,
+  "std_reward": 0.0343,
+  "approve_rate": 0.0,
+  "oracle_agreement_rate": 0.0,
+  "history": [
+    {
+      "batch_start": 0,
+      "batch_size": 1,
+      "mean_reward": 0.4475,
+      "min_reward": 0.4475,
+      "max_reward": 0.4475,
+      "approve_rate": 0.0,
+      "oracle_agreement_rate": 0.0,
+      "algorithm": "ppo"
+    },
+    {
+      "batch_start": 1,
+      "batch_size": 1,
+      "mean_reward": 0.3788,
+      "min_reward": 0.3788,
+      "max_reward": 0.3788,
+      "approve_rate": 0.0,
+      "oracle_agreement_rate": 0.0,
+      "algorithm": "ppo"
+    }
+  ],
+  "reward_log_path": "rl/reward_log.jsonl",
+  "trajectories": [
+    {
+      "action": "REJECT",
+      "reward": 0.4475
+    },
+    {
+      "action": "REJECT",
+      "reward": 0.3788
+    }
+  ]
+}
