@@ -344,7 +344,32 @@ class CreditAnalystEnvironment(Environment):
             market_condition=self._market_state["name"],
         )
 
+        # Base dense reward from oracle
         reward = oracle_score if action.action_type in {"approve", "deny"} else 0.0
+
+# Convert to centered range (-1 to +1)
+        reward = (reward * 2) - 1
+        reward=reward*2
+
+# Get oracle decision
+        oracle_decision = self._ground_truth.get("decision")
+
+# Add correctness shaping
+        if action.action_type == oracle_decision:
+            reward += 0.5
+        else:
+            reward -= 0.5
+
+# Add confidence shaping
+        confidence = float(self._ground_truth.get("confidence", 0.5))
+        if action.action_type == oracle_decision:
+                reward += 0.3 * confidence
+
+# Efficiency penalty
+        reward -= 0.01 * self._steps_taken
+
+# Clamp reward for stability    
+        reward = max(-1.5, min(1.5, reward))
         self._cumulative_reward += reward
         self._done = True
         self._last_episode_score = reward
