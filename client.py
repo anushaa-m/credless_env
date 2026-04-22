@@ -5,9 +5,14 @@ WebSocket-based client for the FinVerse credit investigation environment.
 
 from __future__ import annotations
 
-from openenv.core.client_types import StepResult
-from openenv.core.env_client import EnvClient
-from openenv.core.env_server.types import State
+try:
+    from openenv.core.client_types import StepResult
+    from openenv.core.env_client import EnvClient
+    from openenv.core.env_server.types import State
+except ImportError:
+    StepResult = dict
+    EnvClient = object
+    State = dict
 
 from models import FinVerseObservation
 
