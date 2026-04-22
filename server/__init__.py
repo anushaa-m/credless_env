@@ -1,9 +1,13 @@
-# __init__.py
 from models import FinVerseObservation
-from client import CreditEnv
+
+try:
+    from client import CreditEnv
+except Exception:
+    CreditEnv = None
+
 try:
     from openenv.core.env_server.types import Action, Observation
-except ImportError:
+except Exception:
     Action = dict
     Observation = dict
 

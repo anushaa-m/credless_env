@@ -1,23 +1,30 @@
-# client.py
-"""
-WebSocket-based client for the FinVerse credit investigation environment.
-"""
-
 from __future__ import annotations
 
 try:
     from openenv.core.client_types import StepResult
     from openenv.core.env_client import EnvClient
     from openenv.core.env_server.types import State
-except ImportError:
+
+    OPENENV_AVAILABLE = True
+
+except Exception:
     StepResult = dict
-    EnvClient = object
     State = dict
 
-from models import FinVerseObservation
+    class EnvClient:
+        pass
+
+    OPENENV_AVAILABLE = False
 
 
-class CreditEnv(EnvClient[str, FinVerseObservation, State]):
+# 👇 THIS LINE FIXES YOUR ERROR
+if OPENENV_AVAILABLE:
+    BaseEnv = EnvClient[str, "FinVerseObservation", State]
+else:
+    BaseEnv = EnvClient
+
+
+class CreditEnv(BaseEnv):
     def _step_payload(self, action: str) -> str:
         return str(action).strip().upper()
 
