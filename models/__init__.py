@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from openenv.core.env_server.types import Action, Observation
+try:
+    from openenv.core.env_server.types import Action, Observation
+except ImportError:
+    Action = dict
+    Observation = dict
 from pydantic import BaseModel, Field
 
 
