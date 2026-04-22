@@ -32,24 +32,12 @@ def health():
 
 @app.post("/reset")
 def reset(body: ResetRequest = ResetRequest()):
-    obs = env.reset(task_name=body.task_name, seed=body.seed)
-    return {
-        "observation": obs.model_dump(),
-        "reward": 0.0,
-        "done": False,
-        "info": {"task_name": obs.task_name},
-    }
+    return env.reset(task_name=body.task_name, seed=body.seed)
 
 
 @app.post("/step")
 def step(action: Any = Body(..., embed=False)):
-    obs = env.step(action)
-    return {
-        "observation": obs.model_dump(),
-        "reward": obs.step_reward,
-        "done": obs.done,
-        "info": env.last_info(),
-    }
+    return env.step(action)
 
 
 @app.get("/state")
