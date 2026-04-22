@@ -372,19 +372,32 @@ class CreditDecisionEnvironment:
         self.done = False
 
     def step(self, action: str) -> dict[str, Any]:
-        normalized_action = "APPROVE" if str(action).upper() == "APPROVE" else "REJECT"
-        approve_confidence = float(self.oracle["confidence"])
-        reward = approve_confidence if normalized_action == "APPROVE" else 1.0 - approve_confidence
+        normalized_action = str(action or "").strip().upper()
+        oracle_decision = "APPROVE" if self.oracle["decision"] == "approve" else "REJECT"
+        oracle_confidence = float(self.oracle["confidence"])
         explanation = generate_reasoning(self.user_data, self.oracle)
         self.done = True
+        if normalized_action not in {"APPROVE", "REJECT"}:
+            return {
+                "reward": -0.5,
+                "done": True,
+                "info": {
+                    "explanation": explanation,
+                    "oracle_score": -0.5,
+                    "oracle_decision": oracle_decision,
+                    "oracle_confidence": oracle_confidence,
+                    "error": "invalid action",
+                },
+            }
+        reward = oracle_confidence if normalized_action == oracle_decision else 1.0 - oracle_confidence
         return {
             "reward": float(reward),
             "done": True,
             "info": {
                 "explanation": explanation,
                 "oracle_score": float(reward),
-                "oracle_decision": "APPROVE" if self.oracle["decision"] == "approve" else "REJECT",
-                "oracle_confidence": approve_confidence,
+                "oracle_decision": oracle_decision,
+                "oracle_confidence": oracle_confidence,
             },
         }
 
@@ -406,6 +419,8 @@ class CreditDecisionPipeline:
         normalized_user = _normalize_user_data(user_data)
         risk_score = float(self.agent1.predict(normalized_user))
         active_shap = list(shap_info) if shap_info is not None else self.agent1.explain(normalized_user)
+        if active_shap is None:
+            active_shap = []
         policy_output = self.agent2.generate_with_metadata(normalized_user, risk_score, active_shap)
         active_env = env or CreditDecisionEnvironment(normalized_user)
         raw_result = active_env.step(policy_output.decision)

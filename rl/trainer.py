@@ -4,7 +4,7 @@ import argparse
 import importlib.util
 import json
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -70,59 +70,103 @@ class RLTrainer:
         episode_count = min(self.config.episodes, len(users))
         active_users = users[:episode_count]
         all_trajectories: list[Trajectory] = []
+        trajectory_records: list[dict[str, Any]] = []
 
         for batch_start in range(0, episode_count, self.config.batch_size):
             batch_users = active_users[batch_start : batch_start + self.config.batch_size]
-
             trajectories = self.collector.collect(batch_users)
-            print(f"[DEBUG] Batch start: {batch_start}, size: {len(trajectories)}")
+            sanitized_trajectories = self._sanitize_trajectories(trajectories)
 
-    # ✅ ADD THIS BLOCK HERE
-            actions = [t.summary["decision"] for t in trajectories]
+            actions = [trajectory.summary["decision"] for trajectory in sanitized_trajectories]
+            approve_rate = (
+                sum(1 for action in actions if action == "APPROVE") / len(actions)
+                if actions
+                else 0.0
+            )
 
-            approve_count = sum(1 for a in actions if str(a).upper() == "APPROVE")
-            approve_rate = approve_count / len(actions) if actions else 0.0
-
-    # Apply penalty if too many approvals
             if approve_rate > 0.65:
-                penalty=(approve_rate - 0.65) * 0.5 # dynamic penalty scaling
-                for t in trajectories:
-                    if t.summary["decision"] == "APPROVE":
-                        t.total_reward -= penalty   # 🔥 important
+                penalty = (approve_rate - 0.65) * 0.5
+                for trajectory in sanitized_trajectories:
+                    if trajectory.summary["decision"] == "APPROVE":
+                        trajectory.total_reward -= penalty
+                        trajectory.transitions[0].reward = float(trajectory.total_reward)
+                        trajectory.summary["total_reward"] = float(trajectory.total_reward)
 
-    # ----------------------------------
+            for trajectory in sanitized_trajectories:
+                decision = str(trajectory.summary["decision"])
+                reward = float(trajectory.total_reward)
+                oracle_decision = str(trajectory.summary["oracle_decision"])
+                agreement = int(decision == oracle_decision)
+                print(f"[DEBUG] Action: {decision}, Reward: {reward}")
+                print(f"[DEBUG] Oracle Decision: {oracle_decision}, Agreement: {agreement}")
+                trajectory_records.append({"action": decision, "reward": reward})
 
-            all_trajectories.extend(trajectories)
+            all_trajectories.extend(sanitized_trajectories)
+            self._update_policy(sanitized_trajectories)
 
-            self._update_policy(trajectories)
-
-            rewards = [trajectory.total_reward for trajectory in trajectories]
-            print(f"[DEBUG] Total trajectories: {len(all_trajectories)}")
-            batch_summary = {
+            rewards = [trajectory.total_reward for trajectory in sanitized_trajectories]
+            agreements = [int(trajectory.summary["agreement"]) for trajectory in sanitized_trajectories]
+            self.training_history.append(
+                {
                     "batch_start": batch_start,
-                    "batch_size": len(trajectories),
+                    "batch_size": len(sanitized_trajectories),
                     "mean_reward": round(float(np.mean(rewards)), 4) if rewards else 0.0,
                     "min_reward": round(float(np.min(rewards)), 4) if rewards else 0.0,
                     "max_reward": round(float(np.max(rewards)), 4) if rewards else 0.0,
+                    "approve_rate": round(float(approve_rate), 4),
+                    "oracle_agreement_rate": round(float(np.mean(agreements)), 4) if agreements else 0.0,
                     "algorithm": self.config.algorithm.lower(),
                 }
-            self.training_history.append(batch_summary)
+            )
 
-            summary = self._build_training_summary(all_trajectories)
+        summary = self._build_training_summary(all_trajectories)
+        summary["trajectories"] = trajectory_records
         Path(self.config.summary_path).parent.mkdir(parents=True, exist_ok=True)
         Path(self.config.summary_path).write_text(json.dumps(summary, indent=2), encoding="utf-8")
         self.reward_logger.close()
         return summary
 
+    def _sanitize_trajectories(self, trajectories: list[Trajectory]) -> list[Trajectory]:
+        sanitized: list[Trajectory] = []
+        for trajectory in trajectories:
+            transition = trajectory.transitions[0]
+            model_output = str(transition.metadata.get("raw_text", trajectory.summary.get("decision", "")))
+            decision = self.agent2_module.extract_decision(model_output)
+            if decision == "INVALID":
+                decision = self.agent2_module.extract_decision(str(trajectory.summary.get("decision", "")))
+            if decision == "INVALID":
+                decision = "REJECT"
+
+            reward = float(transition.reward if transition.reward is not None else trajectory.total_reward)
+            info = dict(transition.info or {})
+            oracle_decision = str(info.get("oracle_decision", "REJECT")).upper()
+            agreement = int(decision == oracle_decision)
+
+            transition.action = decision
+            transition.reward = reward
+            transition.done = True
+            trajectory.total_reward = reward
+            trajectory.done = True
+            trajectory.summary["decision"] = decision
+            trajectory.summary["done"] = True
+            trajectory.summary["total_reward"] = reward
+            trajectory.summary["oracle_decision"] = oracle_decision
+            trajectory.summary["agreement"] = agreement
+            trajectory.summary["oracle_score"] = float(info.get("oracle_score", reward))
+            sanitized.append(trajectory)
+        return sanitized
+
     def _build_training_summary(self, trajectories: list[Trajectory]) -> dict[str, Any]:
         rewards = [trajectory.total_reward for trajectory in trajectories]
         decisions = [trajectory.summary["decision"] for trajectory in trajectories]
+        agreements = [int(trajectory.summary.get("agreement", 0)) for trajectory in trajectories]
         return {
             "episodes": len(trajectories),
             "algorithm": self.config.algorithm.lower(),
             "mean_reward": round(float(np.mean(rewards)), 4) if rewards else 0.0,
             "std_reward": round(float(np.std(rewards)), 4) if rewards else 0.0,
             "approve_rate": round(decisions.count("APPROVE") / len(decisions), 4) if decisions else 0.0,
+            "oracle_agreement_rate": round(float(np.mean(agreements)), 4) if agreements else 0.0,
             "history": self.training_history,
             "reward_log_path": self.config.rewards_path,
         }
@@ -136,7 +180,6 @@ class RLTrainer:
             except Exception:
                 if self.config.require_trl:
                     raise
-
         self._update_policy_lightweight(trajectories)
 
     def _trl_backend_available(self) -> bool:
@@ -164,10 +207,10 @@ class RLTrainer:
             transition = trajectory.transitions[0]
             records.append(
                 {
-                    "prompt": transition.metadata["prompt"],
-                    "features": json.dumps(transition.observation["features"]),
+                    "prompt": transition.metadata.get("prompt", ""),
+                    "features": json.dumps(transition.observation.get("features", {})),
                     "reward": float(transition.reward),
-                    "preferred_action": transition.action,
+                    "preferred_action": str(transition.action),
                 }
             )
         dataset = Dataset.from_list(records)
@@ -183,10 +226,9 @@ class RLTrainer:
             rewards: list[float] = []
             for completion, reward_value, target_action in zip(completions, reward, preferred_action):
                 decision = self.agent2_module.extract_decision(str(completion))
-                if decision == str(target_action):
-                    rewards.append(float(reward_value))
-                else:
-                    rewards.append(max(float(reward_value) - 1.0, -1.0))
+                if decision == "INVALID":
+                    decision = "REJECT"
+                rewards.append(float(reward_value) if decision == str(target_action) else max(float(reward_value) - 1.0, -1.0))
             return rewards
 
         training_args = GRPOConfig(
@@ -216,19 +258,15 @@ class RLTrainer:
 
         for trajectory in trajectories:
             transition = trajectory.transitions[0]
-            action = transition.action
+            action = str(transition.action)
             reward = float(transition.reward)
             advantage = reward - baseline
-            if advantage >= 0:
-                target_label = action
-            else:
-                target_label = "REJECT" if action == "APPROVE" else "APPROVE"
-
+            target_label = action if advantage >= 0 else ("REJECT" if action == "APPROVE" else "APPROVE")
             update_samples.append(
                 {
-                    "features": transition.observation["features"],
-                    "risk_score": transition.observation["risk_score"],
-                    "shap_info": transition.observation["shap_info"],
+                    "features": transition.observation.get("features", {}),
+                    "risk_score": float(transition.observation.get("risk_score", 0.5)),
+                    "shap_info": transition.observation.get("shap_info") or [],
                     "label": target_label,
                     "weight": 1.0 + abs(advantage),
                 }
