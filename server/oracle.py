@@ -70,6 +70,15 @@ def _clamp_threshold(value: float, lo: float = 0.10, hi: float = 0.90) -> float:
     return float(np.clip(value, lo, hi))
 
 
+def _decision_confidence(prob: float, high_thresh: float) -> float:
+    """Confidence in the binary approve/deny decision, based on margin to deny cutoff."""
+    if prob >= high_thresh:
+        span = max(1e-6, 1.0 - high_thresh)
+        return float(np.clip((prob - high_thresh) / span, 0.0, 1.0))
+    span = max(1e-6, high_thresh)
+    return float(np.clip((high_thresh - prob) / span, 0.0, 1.0))
+
+
 class CredLessOracle:
     def __init__(self):
         self._warned_legacy_fallback = False
@@ -163,6 +172,7 @@ class CredLessOracle:
         prob = self.predict_risk(features, market_condition=market_condition)
         low_thresh = _clamp_threshold(self.low_thresh + float(config["threshold_delta"]))
         high_thresh = _clamp_threshold(self.high_thresh + float(config["threshold_delta"]), lo=low_thresh + 0.05)
+        confidence = _decision_confidence(prob, high_thresh)
 
         if prob < low_thresh:
             tier, decision = "low_risk", "approve"
@@ -175,6 +185,7 @@ class CredLessOracle:
             "tier": tier,
             "decision": decision,
             "default_prob": round(prob, 6),
+            "confidence": round(confidence, 6),
             "market_condition": market_condition,
             "thresholds": {
                 "low_risk": round(low_thresh, 4),
@@ -217,6 +228,7 @@ class CredLessOracle:
             "decision": result["decision"],
             "tier": result["tier"],
             "default_risk": round(risk, 6),
+            "confidence": round(float(result["confidence"]), 6),
             "feature_contributions": [(name, round(value, 6)) for name, value in top],
             "dominant_reason": dominant_feature,
             "explanation": explanation,

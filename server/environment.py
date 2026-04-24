@@ -139,7 +139,15 @@ class CreditAnalystEnvironment(Environment):
             "source": source,
         }
 
-    def _set_last_info(self, explanation: str, oracle_score: float, penalties: Dict[str, float] | None = None) -> None:
+    def _set_last_info(
+        self,
+        explanation: str,
+        oracle_score: float,
+        penalties: Dict[str, float] | None = None,
+        *,
+        oracle_decision: str | None = None,
+        oracle_confidence: float | None = None,
+    ) -> None:
         self._last_info = {
             "task_name": self._task,
             "cumulative_reward": round(self._cumulative_reward, 4),
@@ -150,6 +158,10 @@ class CreditAnalystEnvironment(Environment):
             "oracle_score": round(float(oracle_score), 4),
             "penalties_applied": penalties or {},
         }
+        if oracle_decision is not None:
+            self._last_info["oracle_decision"] = str(oracle_decision).upper()
+        if oracle_confidence is not None:
+            self._last_info["oracle_confidence"] = round(float(oracle_confidence), 4)
 
     def last_info(self) -> Dict[str, Any]:
         return dict(self._last_info)
@@ -502,6 +514,8 @@ class CreditAnalystEnvironment(Environment):
             explanation["explanation"],
             oracle_score,
             penalties,
+            oracle_decision=oracle_decision,
+            oracle_confidence=confidence,
         )
         return self._build_observation(
             step_reward=reward,
