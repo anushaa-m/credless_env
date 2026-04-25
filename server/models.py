@@ -14,4 +14,6 @@ class FinVerseResponse(BaseModel):
     explanation: str = Field(default="")
     oracle_risk: float = Field(default=0.0)
     oracle_confidence: float = Field(default=0.0)
+    session_id: str = Field(default="")
+    episode_id: str = Field(default="")
     info: Dict[str, Any] = Field(default_factory=dict)

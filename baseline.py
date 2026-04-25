@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
+FALLBACK_BASE_URL = "http://localhost:7860"
 RUNS = int(os.getenv("BASELINE_RUNS", "5"))
 MIN_SCORE = 0.01
 MAX_SCORE = 0.99
@@ -31,6 +32,22 @@ REQUEST_PRIORITY = [
 
 def strict_score(value: float) -> float:
     return round(min(MAX_SCORE, max(MIN_SCORE, float(value))), 4)
+
+
+def resolve_base_url() -> str:
+    candidates = [str(BASE_URL).rstrip("/"), FALLBACK_BASE_URL]
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            response = requests.get(f"{candidate}/health", timeout=5)
+            response.raise_for_status()
+            return candidate
+        except Exception:
+            continue
+    return str(BASE_URL).rstrip("/")
 
 
 def oracle_risk(payload: dict) -> float:
@@ -165,6 +182,8 @@ def run_episode(task: str, retries: int = 2) -> float:
             response = requests.post(f"{BASE_URL}/reset", json={"task_name": task}, timeout=30)
             response.raise_for_status()
             payload = response.json()
+            session_id = str(payload["session_id"])
+            episode_id = str(payload["episode_id"])
             obs = payload.get("observation", payload)
 
             steps = 0
@@ -173,7 +192,15 @@ def run_episode(task: str, retries: int = 2) -> float:
             while not done and steps < MAX_STEPS:
                 steps += 1
                 action = baseline_action(payload, task)
-                response = requests.post(f"{BASE_URL}/step", json=action, timeout=30)
+                response = requests.post(
+                    f"{BASE_URL}/step",
+                    json={
+                        "session_id": session_id,
+                        "episode_id": episode_id,
+                        "action": action,
+                    },
+                    timeout=30,
+                )
                 response.raise_for_status()
                 payload = response.json()
                 obs = payload.get("observation", obs)
@@ -188,6 +215,8 @@ def run_episode(task: str, retries: int = 2) -> float:
 
 
 def main(output_json: bool = False):
+    global BASE_URL
+    BASE_URL = resolve_base_url()
     tasks = ["binary_decision", "risk_tiering", "adaptive_inquiry"]
     results = {}
     for task in tasks:

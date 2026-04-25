@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "credless-env"
 version = "1.0.0"
-description = "Multi-step credit investigation environment with 20 engineered real-world features, adversarial applicant interactions, training, inference, and oracle scoring"
+description = "CredLess two-agent credit investigation environment with unified oracle training, inference, and OpenEnv serving"
 requires-python = ">=3.10"
 dependencies = [
     "openenv==0.1.13",
@@ -25,8 +25,8 @@ dependencies = [
 [project.scripts]
 server = "server.app:main"
 credless-server = "server.app:main"
-finverse-train = "train:main"
-finverse-infer = "inference:main"
+credless-train = "train:main"
+credless-infer = "inference:main"
 
 [tool.hatch.metadata]
 allow-direct-references = true

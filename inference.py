@@ -26,6 +26,9 @@ DEFAULT_API_BASE_URL = os.getenv("API_BASE_URL")
 DEFAULT_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
 MAX_RUNTIME_SECONDS = 20 * 60
 MAX_EPISODE_STEPS = 8
+APPROVE_THRESHOLD = 0.30
+LOW_RISK_AUTO_APPROVE = 0.40
+LOW_RISK_HEURISTIC_CAP = 0.50
 REQUEST_PRIORITY = [
     "total_delinquency_score",
     "overdraft_risk",
@@ -187,8 +190,8 @@ def _choose_action(observation: Mapping[str, Any], oracle_payload: Mapping[str, 
         if isinstance(value, Mapping)
     }
     if (
-        (confidence and any((1.0 - value) > 0.25 for value in confidence.values()))
-        or oracle_risk > 0.72
+        confidence and any((1.0 - value) > 0.25 for value in confidence.values())
+        and oracle_risk > 0.88
     ) and not observation.get("fraud_flags_raised"):
         return {
             "action_type": "flag_fraud",
@@ -196,15 +199,27 @@ def _choose_action(observation: Mapping[str, Any], oracle_payload: Mapping[str, 
             "reasoning": "Potential fraud indicators identified from observed applicant data and oracle risk.",
         }, 0.0, []
 
+    current_step = int(observation.get("step", 0) or 0)
+    max_steps = int(observation.get("max_steps", MAX_EPISODE_STEPS) or MAX_EPISODE_STEPS)
+    if missing_fields and current_step <= max_steps - 3 and (oracle_risk > 0.55 or oracle_confidence < 0.75):
+        for field in REQUEST_PRIORITY:
+            if field in missing_fields and field not in profile:
+                return {"action_type": "request_info", "params": {"field": field}}, 0.0, []
+        return {"action_type": "request_info", "params": {"field": str(missing_fields[0])}}, 0.0, []
+
     features = _profile_features(observation, defaults={field: 0.5 for field in getattr(agent1, "feature_order", [])})
     heuristic_risk = float(agent1.predict(features))
     risk_score = 0.60 * oracle_risk + 0.40 * heuristic_risk if oracle_risk > 0.0 else heuristic_risk
     shap_info = list(agent1.explain(features))
 
+    policy_approve_probability: float | None = None
     if hasattr(agent2, "generate_with_metadata"):
         policy_output = agent2.generate_with_metadata(features, risk_score, shap_info)
         decision = str(policy_output.decision).strip().upper()
         reasoning = getattr(policy_output, "raw_text", "") or "Decision from agent 2 policy."
+        raw_probability = getattr(policy_output, "approve_probability", None)
+        if raw_probability is not None:
+            policy_approve_probability = float(np.clip(float(raw_probability), 0.01, 0.99))
     else:
         decision = str(agent2.generate_decision(features, risk_score, shap_info)).strip().upper()
         reasoning = "Decision from agent 2 policy."
@@ -215,10 +230,31 @@ def _choose_action(observation: Mapping[str, Any], oracle_payload: Mapping[str, 
             "reasoning": f"Escalating because oracle confidence is only {oracle_confidence:.3f}.",
         }, risk_score, shap_info
 
-    terminal_action = "approve" if decision == "APPROVE" else "deny"
+    heuristic_approve_probability = float(np.clip(1.0 - risk_score, 0.01, 0.99))
+    oracle_approve_probability = float(np.clip(1.0 - oracle_risk, 0.01, 0.99))
+    if policy_approve_probability is None:
+        policy_approve_probability = 0.55 if decision == "APPROVE" else 0.45
+
+    blended_approve_probability = float(
+        np.clip(
+            0.35 * policy_approve_probability + 0.45 * oracle_approve_probability + 0.20 * heuristic_approve_probability,
+            0.01,
+            0.99,
+        )
+    )
+
+    auto_approve = (
+        oracle_risk <= LOW_RISK_AUTO_APPROVE
+        and risk_score <= LOW_RISK_HEURISTIC_CAP
+        and not observation.get("fraud_flags_raised")
+    )
+    terminal_action = "approve" if auto_approve or blended_approve_probability >= APPROVE_THRESHOLD else "deny"
     return {
         "action_type": terminal_action,
-        "reasoning": f"{reasoning} Oracle risk={oracle_risk:.3f}, confidence={oracle_confidence:.3f}.",
+        "reasoning": (
+            f"{reasoning} Oracle risk={oracle_risk:.3f}, confidence={oracle_confidence:.3f}, "
+            f"approve_prob={blended_approve_probability:.3f}."
+        ),
     }, risk_score, shap_info
 
 

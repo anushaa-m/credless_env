@@ -9,6 +9,7 @@ from openenv.core.env_server.interfaces import Environment
 from models import FinVerseAction, FinVerseObservation, FinVerseState
 from pipeline.main_pipeline import FrozenRiskPredictor
 from .data_generator import FIELD_NAMES, generate_applicant
+from .graders import audit_terminal_action, evaluate_terminal_action
 from .oracle import MARKET_SCENARIOS, CredLessOracle
 from .tasks import TASK_DIFFICULTY, TASK_NAMES
 
@@ -23,6 +24,8 @@ DUPLICATE_ACTION_PENALTY = 0.10
 NO_PROGRESS_LOOP_PENALTY = 0.15
 FREE_EXTRA_FIELD_REQUESTS = 2
 EXCESS_FIELD_REQUEST_PENALTY = 0.03
+_SHARED_ORACLE: CredLessOracle | None = None
+_SHARED_RISK_PREDICTOR: FrozenRiskPredictor | None = None
 POLICY_REQUIRED_FIELDS = {
     "easy": ["payment_reliability", "debt_burden_score"],
     "medium": ["payment_reliability", "debt_burden_score", "overdraft_risk"],
@@ -33,8 +36,13 @@ POLICY_REQUIRED_FIELDS = {
 class CreditAnalystEnvironment(Environment):
     def __init__(self):
         super().__init__()
-        self.oracle = CredLessOracle()
-        self.risk_predictor = FrozenRiskPredictor()
+        global _SHARED_ORACLE, _SHARED_RISK_PREDICTOR
+        if _SHARED_ORACLE is None:
+            _SHARED_ORACLE = CredLessOracle()
+        if _SHARED_RISK_PREDICTOR is None:
+            _SHARED_RISK_PREDICTOR = FrozenRiskPredictor()
+        self.oracle = _SHARED_ORACLE
+        self.risk_predictor = _SHARED_RISK_PREDICTOR
         self._session_id = str(uuid.uuid4())
         self._episode_count = 0
         self._auditor_compliance_log: List[float] = []
@@ -57,6 +65,59 @@ class CreditAnalystEnvironment(Environment):
         self._last_info: Dict[str, Any] = {}
         self._current_observation: Dict[str, Any] = {}
         self.trajectory: List[Any] = []
+
+    def set_session_id(self, session_id: str) -> None:
+        self._session_id = str(session_id)
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "session_id": self._session_id,
+            "episode_count": self._episode_count,
+            "auditor_compliance_log": list(self._auditor_compliance_log),
+            "episode_id": self._episode_id,
+            "task": self._task,
+            "difficulty": self._difficulty,
+            "steps_taken": self._steps_taken,
+            "cumulative_reward": self._cumulative_reward,
+            "applicant": dict(self._applicant),
+            "ground_truth": dict(self._ground_truth),
+            "market_state": dict(self._market_state),
+            "market_visible": self._market_visible,
+            "current_policy": dict(self._current_policy),
+            "conversation": list(self._conversation),
+            "fraud_flags": list(self._fraud_flags),
+            "requested_fields": list(self._requested_fields),
+            "revealed_fields": dict(self._revealed_fields),
+            "done": self._done,
+            "last_episode_score": self._last_episode_score,
+            "last_info": dict(self._last_info),
+            "current_observation": dict(self._current_observation),
+            "trajectory": list(self.trajectory),
+        }
+
+    def restore_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        self._session_id = str(snapshot.get("session_id", self._session_id))
+        self._episode_count = int(snapshot.get("episode_count", 0))
+        self._auditor_compliance_log = list(snapshot.get("auditor_compliance_log", []))
+        self._episode_id = str(snapshot.get("episode_id", ""))
+        self._task = str(snapshot.get("task", "binary_decision"))
+        self._difficulty = str(snapshot.get("difficulty", "easy"))
+        self._steps_taken = int(snapshot.get("steps_taken", 0))
+        self._cumulative_reward = float(snapshot.get("cumulative_reward", 0.0))
+        self._applicant = dict(snapshot.get("applicant", {}))
+        self._ground_truth = dict(snapshot.get("ground_truth", {}))
+        self._market_state = dict(snapshot.get("market_state", {}))
+        self._market_visible = bool(snapshot.get("market_visible", False))
+        self._current_policy = dict(snapshot.get("current_policy", {}))
+        self._conversation = list(snapshot.get("conversation", []))
+        self._fraud_flags = list(snapshot.get("fraud_flags", []))
+        self._requested_fields = list(snapshot.get("requested_fields", []))
+        self._revealed_fields = dict(snapshot.get("revealed_fields", {}))
+        self._done = bool(snapshot.get("done", False))
+        self._last_episode_score = float(snapshot.get("last_episode_score", 0.0))
+        self._last_info = dict(snapshot.get("last_info", {}))
+        self._current_observation = dict(snapshot.get("current_observation", {}))
+        self.trajectory = list(snapshot.get("trajectory", []))
 
     def _build_policy(self, rng: random.Random) -> Dict[str, Any]:
         max_dti = {
@@ -554,24 +615,31 @@ class CreditAnalystEnvironment(Environment):
             market_condition=self._market_state["name"],
         )
         confidence = float(self._ground_truth.get("confidence", 0.5))
-        reward = -STEP_PENALTY
-        penalties: Dict[str, float] = {"efficiency": STEP_PENALTY}
-
-        if action.action_type == "escalate":
-            reward += 0.0
-            penalties["terminal_reward"] = 0.0
-        else:
-            correctness_reward = 1.0 if action.action_type == oracle_decision else -1.0
-            confidence_bonus = 0.2 * confidence if action.action_type == oracle_decision else -0.2 * confidence
-            fast_resolution_bonus = 0.2 if self._steps_taken <= 3 else 0.0
-            reward += correctness_reward + confidence_bonus + fast_resolution_bonus
-            penalties["terminal_reward"] = round(correctness_reward, 4)
-            if confidence_bonus:
-                penalties["confidence_bonus"] = round(confidence_bonus, 4)
-            if fast_resolution_bonus:
-                penalties["fast_resolution_bonus"] = round(fast_resolution_bonus, 4)
-
-        reward = max(-1.5, min(1.5, reward))
+        final_action = {
+            "action_type": action.action_type,
+            "decision": action.action_type,
+            "tier": action.params.get("tier"),
+            "rate": action.params.get("rate"),
+            "expected_rate": self._market_state.get("base_rate"),
+            "reasoning": action.reasoning,
+        }
+        auditor_result = audit_terminal_action(
+            final_action=final_action,
+            oracle_truth=self._ground_truth,
+            revealed_fields=self._revealed_fields,
+            market_visible=self._market_visible,
+            fraud_flags=self._fraud_flags,
+        )
+        evaluation = evaluate_terminal_action(
+            final_action=final_action,
+            oracle_truth=self._ground_truth,
+            auditor_result=auditor_result,
+            requests_made=len(self._requested_fields),
+            queried_market=self._market_visible,
+            fraud_flags=self._fraud_flags,
+            applicant_is_fraudulent=bool(self._applicant.get("is_adversarial", False)),
+        )
+        reward = max(-1.5, min(1.5, float(evaluation["reward"])))
         self._cumulative_reward += reward
         self._done = True
         self._last_episode_score = reward
@@ -590,15 +658,25 @@ class CreditAnalystEnvironment(Environment):
         self._set_last_info(
             explanation["explanation"],
             oracle_score,
-            penalties,
+            {
+                "efficiency": evaluation.get("efficiency_penalty", 0.0),
+                "auditor_score": evaluation.get("auditor_score", 0.0),
+                "task_score": evaluation.get("task_score", 0.0),
+                "oracle_alignment": auditor_result.get("oracle_alignment", 0.0),
+                "reasoning_score": auditor_result.get("reasoning_score", 0.0),
+                "bias_penalty": auditor_result.get("bias_penalty", 0.0),
+            },
             oracle_decision=oracle_decision,
             oracle_confidence=confidence,
         )
         self._record_reward_components(
-            correctness=penalties.get("terminal_reward", 0.0),
-            confidence_bonus=penalties.get("confidence_bonus", 0.0),
-            fast_resolution_bonus=penalties.get("fast_resolution_bonus", 0.0),
-            efficiency=-STEP_PENALTY,
+            task_score=evaluation.get("task_score", 0.0),
+            auditor_score=evaluation.get("auditor_score", 0.0),
+            fraud_bonus=evaluation.get("fraud_bonus", 0.0),
+            efficiency=-evaluation.get("efficiency_penalty", 0.0),
+            oracle_alignment=auditor_result.get("oracle_alignment", 0.0),
+            reasoning_score=auditor_result.get("reasoning_score", 0.0),
+            bias_penalty=-auditor_result.get("bias_penalty", 0.0),
         )
         self._mark_last_action_progress(True)
         return self._build_observation(

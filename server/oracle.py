@@ -70,6 +70,29 @@ def _clamp_threshold(value: float, lo: float = 0.10, hi: float = 0.90) -> float:
     return float(np.clip(value, lo, hi))
 
 
+def _derive_thresholds_from_scalar(threshold: float) -> tuple[float, float]:
+    low_risk_threshold = max(0.10, min(float(threshold) - 0.05, float(threshold) * 0.60))
+    medium_risk_threshold = max(low_risk_threshold + 0.05, min(0.90, float(threshold)))
+    return round(low_risk_threshold, 4), round(medium_risk_threshold, 4)
+
+
+def _resolve_thresholds(artifact: Dict[str, object] | None) -> tuple[float, float, str]:
+    if isinstance(artifact, dict):
+        thresholds = artifact.get("risk_thresholds", {})
+        if isinstance(thresholds, dict):
+            low = thresholds.get("low_risk")
+            high = thresholds.get("medium_risk")
+            if low is not None and high is not None:
+                return float(low), float(high), "artifact"
+
+        scalar_threshold = artifact.get("threshold")
+        if scalar_threshold is not None:
+            low, high = _derive_thresholds_from_scalar(float(scalar_threshold))
+            return low, high, "legacy_threshold"
+
+    return 0.40, 0.70, "defaults"
+
+
 def _decision_confidence(prob: float, high_thresh: float) -> float:
     """Confidence in the binary approve/deny decision, based on margin to deny cutoff."""
     if prob >= high_thresh:
@@ -102,9 +125,11 @@ class CredLessOracle:
             self.model_name = artifact.get("model_name", "unknown")
             self.metrics = artifact.get("metrics", {})
             self.feature_order = list(artifact.get("feature_names", FEATURE_NAMES))
-            thresholds = artifact.get("risk_thresholds", {})
-            self.low_thresh = thresholds.get("low_risk", 0.40)
-            self.high_thresh = thresholds.get("medium_risk", 0.70)
+            self.low_thresh, self.high_thresh, threshold_source = _resolve_thresholds(artifact)
+            if threshold_source == "legacy_threshold":
+                print("[Oracle WARNING] Using legacy scalar threshold from artifact.")
+            elif threshold_source == "defaults":
+                print("[Oracle WARNING] Thresholds missing from artifact. Using defaults.")
         else:
             self.model = artifact
             self.model_name = "unknown"
