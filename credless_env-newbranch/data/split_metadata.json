@@ -1,0 +1,29 @@
+{
+  "source_path": "C:\\Users\\Aayushi Patel\\Documents\\siya\\credless_env\\credless_env\\data\\cd_updated.csv",
+  "target_column": "target",
+  "target_semantics": "1_likely_good_outcome",
+  "random_seed": 42,
+  "rows_raw": 150000,
+  "rows_cleaned": 150000,
+  "rows_train": 105000,
+  "rows_val": 22500,
+  "rows_test": 22500,
+  "class_balance": {
+    "full": {
+      "0": 0.5,
+      "1": 0.5
+    },
+    "train": {
+      "0": 0.5,
+      "1": 0.5
+    },
+    "val": {
+      "0": 0.5,
+      "1": 0.5
+    },
+    "test": {
+      "0": 0.5,
+      "1": 0.5
+    }
+  }
+}

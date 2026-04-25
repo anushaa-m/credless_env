@@ -1,0 +1,22 @@
+name: credless-env
+version: "1.0.0"
+entry_point: server.app:app        
+description: >
+  Multi-step investigation (5-8 steps) RL environment for credit underwriting
+  with 20 engineered real-world features, market context, adversarial applicant
+  behavior, and action/conversation history. Three tasks: binary approval
+  (easy), risk tiering (medium), adaptive field inquiry (hard).
+author: anushaa-m
+license: MIT
+tags:
+  - finance
+  - credit-scoring
+  - financial-inclusion
+  - openenv
+tasks:
+  - name: binary_decision
+    difficulty: easy
+  - name: risk_tiering
+    difficulty: medium
+  - name: adaptive_inquiry
+    difficulty: hard
