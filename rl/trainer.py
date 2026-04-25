@@ -128,6 +128,9 @@ class RLTrainer:
         }
 
     def _update_policy(self, trajectories: list[Trajectory]) -> None:
+        if hasattr(self.pipeline.agent2, "policy"):
+            return
+
         algorithm = self.config.algorithm.lower()
         if algorithm in {"ppo", "grpo"} and self._trl_backend_available():
             try:

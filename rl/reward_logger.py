@@ -16,11 +16,13 @@ class RewardLogger:
 
     def log_step(self, payload: Mapping[str, Any]) -> None:
         record = {"record_type": "step", **dict(payload)}
+        self._ensure_learning_fields(record)
         self._buffer.append(record)
         self._maybe_flush()
 
     def log_episode(self, payload: Mapping[str, Any]) -> None:
         record = {"record_type": "episode", **dict(payload)}
+        self._ensure_learning_fields(record)
         self._buffer.append(record)
         self._maybe_flush(force=True)
 
@@ -46,3 +48,15 @@ class RewardLogger:
     def _maybe_flush(self, *, force: bool = False) -> None:
         if force or len(self._buffer) >= self.flush_every:
             self.flush()
+
+    def _ensure_learning_fields(self, record: dict[str, Any]) -> None:
+        info = record.get("info")
+        if not isinstance(info, Mapping):
+            info = {}
+
+        if "reward" not in record and "total_reward" in record:
+            record["reward"] = record["total_reward"]
+        if "decision" not in record and "action" in record:
+            record["decision"] = record["action"]
+        if "oracle_decision" not in record and "oracle_decision" in info:
+            record["oracle_decision"] = info["oracle_decision"]

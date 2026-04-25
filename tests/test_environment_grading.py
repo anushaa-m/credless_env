@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import Mock
 
 from models import FinVerseAction
+from server.data_generator import generate_applicant
 from server.environment import CreditAnalystEnvironment
 
 
@@ -37,6 +38,30 @@ def build_env() -> CreditAnalystEnvironment:
 
 
 class EnvironmentGradingTests(unittest.TestCase):
+    def test_deception_level_marks_applicant_metadata(self):
+        applicant = generate_applicant(seed=7, difficulty="hard", deception_level=1.0)
+
+        self.assertTrue(applicant["is_adversarial"])
+        self.assertEqual(applicant["deception_level"], 1.0)
+        self.assertEqual(applicant["data_quality"], "self_reported")
+        self.assertIn("transaction_health", applicant["fabricated_fields"])
+        self.assertTrue(applicant["withheld_fields"])
+
+    def test_fraud_flag_rewards_matched_deception(self):
+        env = CreditAnalystEnvironment()
+        env.reset(task_name="adaptive_inquiry", seed=7, deception_level=1.0)
+
+        observation = env.step(
+            {
+                "action_type": "flag_fraud",
+                "params": {"reason": "income and transaction confidence look inconsistent"},
+                "reasoning": "income and transaction confidence look inconsistent",
+            }
+        )
+
+        self.assertGreater(observation["reward"], 0.05)
+        self.assertTrue(observation["info"]["fraud_signal_match"])
+
     def test_terminal_reward_records_auditor_components(self):
         env = build_env()
 

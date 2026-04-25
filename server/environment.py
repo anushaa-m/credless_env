@@ -17,6 +17,8 @@ MAX_STEPS = 8
 VALID_FIELD_REQUEST_REWARD = 0.05
 VALID_MARKET_QUERY_REWARD = 0.05
 VALID_FRAUD_FLAG_REWARD = 0.05
+VALID_DECEPTION_FLAG_REWARD = 0.15
+FALSE_FRAUD_FLAG_PENALTY = 0.10
 STEP_PENALTY = 0.01
 INVALID_ACTION_PENALTY = 0.5
 TIMEOUT_PENALTY = 1.0
@@ -382,7 +384,12 @@ class CreditAnalystEnvironment(Environment):
             return 0.0
         return min(0.05, 0.015 * len(unique_features))
 
-    def reset(self, task_name: str = "binary_decision", seed: Optional[int] = None) -> Dict[str, Any]:
+    def reset(
+        self,
+        task_name: str = "binary_decision",
+        seed: Optional[int] = None,
+        deception_level: Optional[float] = None,
+    ) -> Dict[str, Any]:
         if task_name not in TASK_NAMES:
             task_name = "binary_decision"
 
@@ -395,7 +402,11 @@ class CreditAnalystEnvironment(Environment):
         self._cumulative_reward = 0.0
         self._done = False
         self._last_episode_score = 0.0
-        self._applicant = generate_applicant(seed=seed, difficulty=self._difficulty)
+        self._applicant = generate_applicant(
+            seed=seed,
+            difficulty=self._difficulty,
+            deception_level=deception_level,
+        )
         self._market_state = self._pick_market(rng)
         self._ground_truth = self.oracle.predict(
             self._applicant["features"],
@@ -589,23 +600,70 @@ class CreditAnalystEnvironment(Environment):
 
         self._fraud_flags.append(reason)
         self._append_conversation("assistant", f"Fraud flag raised: {reason}")
-        reward = VALID_FRAUD_FLAG_REWARD - STEP_PENALTY
+        is_deceptive = bool(self._applicant.get("is_adversarial", False))
+        signal_match = self._fraud_reason_matches_applicant(reason)
+        if is_deceptive and signal_match:
+            reward = VALID_DECEPTION_FLAG_REWARD - STEP_PENALTY
+            message = "Fraud flag matched applicant inconsistency."
+            penalties = {"deception_detection": VALID_DECEPTION_FLAG_REWARD, "efficiency": STEP_PENALTY}
+            reward_components = {
+                "deception_detection": VALID_DECEPTION_FLAG_REWARD,
+                "efficiency": -STEP_PENALTY,
+            }
+        elif is_deceptive:
+            reward = VALID_FRAUD_FLAG_REWARD - STEP_PENALTY
+            message = "Fraud flag recorded for downstream review."
+            penalties = {"fraud_review": VALID_FRAUD_FLAG_REWARD, "efficiency": STEP_PENALTY}
+            reward_components = {
+                "fraud_review": VALID_FRAUD_FLAG_REWARD,
+                "efficiency": -STEP_PENALTY,
+            }
+        else:
+            reward = -(FALSE_FRAUD_FLAG_PENALTY + STEP_PENALTY)
+            message = "Fraud flag recorded; no deception evidence found."
+            penalties = {"false_fraud_flag": FALSE_FRAUD_FLAG_PENALTY, "efficiency": STEP_PENALTY}
+            reward_components = {
+                "false_fraud_flag": -FALSE_FRAUD_FLAG_PENALTY,
+                "efficiency": -STEP_PENALTY,
+            }
         self._refresh_current_observation()
         self._cumulative_reward += reward
         self._set_last_info(
-            "Fraud flag recorded for downstream review.",
+            message,
             0.0,
-            {"fraud_review": VALID_FRAUD_FLAG_REWARD, "efficiency": STEP_PENALTY},
+            penalties,
         )
-        self._record_reward_components(
-            fraud_review=VALID_FRAUD_FLAG_REWARD,
-            efficiency=-STEP_PENALTY,
-        )
+        self._last_info["fraud_signal_match"] = bool(signal_match)
+        self._record_reward_components(**reward_components)
         self._mark_last_action_progress(True)
         return self._build_observation(
             step_reward=reward,
-            message="Fraud flag recorded for downstream review.",
+            message=message,
         )
+
+    def _fraud_reason_matches_applicant(self, reason: str) -> bool:
+        if not self._applicant.get("is_adversarial", False):
+            return False
+        text = reason.strip().lower()
+        terms = {
+            "fraud",
+            "fabricat",
+            "withheld",
+            "inconsistent",
+            "verification",
+            "confidence",
+            "income",
+            "transaction",
+            "overdraft",
+            "delinquency",
+        }
+        for field in list(self._applicant.get("fabricated_fields", [])) + list(self._applicant.get("withheld_fields", [])):
+            field_name = str(field).strip().lower()
+            if not field_name:
+                continue
+            terms.add(field_name)
+            terms.add(field_name.replace("_", " "))
+        return any(term in text for term in terms)
 
     def _handle_terminal(self, action: FinVerseAction) -> FinVerseObservation:
         oracle_decision = str(self._ground_truth.get("decision", "deny")).lower()

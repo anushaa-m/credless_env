@@ -49,6 +49,17 @@ def _oracle_factor_names(top_factors: list[list[Any]]) -> list[str]:
     return names
 
 
+def _normalize_decision_label(value: Any) -> str:
+    decision = str(value or "").strip().upper()
+    if decision == "REJECT":
+        return "DENY"
+    return decision
+
+
+def _oracle_agreed(decision: Any, oracle_decision: Any) -> bool:
+    return _normalize_decision_label(decision) == _normalize_decision_label(oracle_decision)
+
+
 def _local_oracle_payload(env: CreditAnalystEnvironment) -> dict[str, Any]:
     revealed = env.oracle_features()
     merged = {field: 0.5 for field in getattr(env.oracle, "feature_order", [])}
@@ -292,6 +303,7 @@ def _run_one_local(agent1: Any, agent2: Any, episode_seed: int) -> dict[str, Any
         "oracle_score": round(float(final_result["info"].get("oracle_score", 0.0)), 6),
         "explanation": str(final_result["info"].get("explanation", "")),
         "oracle_decision": str(final_result["info"].get("oracle_decision", "")),
+        "oracle_agreed": _oracle_agreed(final_action, final_result["info"].get("oracle_decision", "")),
         "steps": steps,
         "action_history": list(observation.get("action_history", [])),
     }
@@ -300,14 +312,12 @@ def _run_one_local(agent1: Any, agent2: Any, episode_seed: int) -> dict[str, Any
 def _aggregate_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     rewards = np.array([float(item["reward"]) for item in results], dtype=float)
     approvals = [str(item["decision"]) for item in results]
-    oracle_matches = [
-        1.0 if str(item["decision"]) == str(item["oracle_decision"]) else 0.0
-        for item in results
-    ]
+    oracle_matches = [1.0 if _oracle_agreed(item["decision"], item["oracle_decision"]) else 0.0 for item in results]
     return {
         "mean_reward": round(float(rewards.mean()), 6) if len(rewards) else 0.0,
         "approve_rate": round(approvals.count("APPROVE") / len(approvals), 6) if approvals else 0.0,
         "oracle_agreement": round(float(np.mean(oracle_matches)), 6) if oracle_matches else 0.0,
+        "oracle_agreement_count": int(sum(oracle_matches)),
         "episodes": len(results),
     }
 
@@ -342,6 +352,8 @@ def main() -> None:
                 "decision": item["decision"],
                 "reward": item["reward"],
                 "oracle_score": item["oracle_score"],
+                "oracle_decision": item["oracle_decision"],
+                "oracle_agreed": item["oracle_agreed"],
                 "explanation": item["explanation"],
             }
             handle.write(json.dumps(public_item, ensure_ascii=True) + "\n")

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import math
 import pickle
 import sys
 from dataclasses import asdict, dataclass
@@ -26,6 +25,7 @@ from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 
+from agent2_policy import Agent2Policy, PolicyParams
 from data.synthetic_generator import generate_synthetic_data
 from pipeline.oracle import oracle_decision
 
@@ -173,6 +173,7 @@ class Agent2DecisionMaker:
         feature_stats: Mapping[str, Mapping[str, float]] | None = None,
         trained: bool = False,
         forced_label: int | None = None,
+        policy_params: Mapping[str, Any] | None = None,
     ) -> None:
         self.config = config or Agent2Config()
         self.numeric_fields = list(numeric_fields or self.config.resolved_numeric_fields())
@@ -184,6 +185,8 @@ class Agent2DecisionMaker:
         self.trained = trained
         self.forced_label = forced_label
         self._classes = np.array([0, 1], dtype=int)
+        params = PolicyParams(**dict(policy_params or {}))
+        self.policy = Agent2Policy(params=params, checkpoint_path=Path(self.config.checkpoint_dir) / "agent2_policy.json")
 
     @classmethod
     def from_checkpoint(cls, checkpoint_dir: str | Path | None = None) -> "Agent2DecisionMaker":
@@ -195,7 +198,14 @@ class Agent2DecisionMaker:
         with open(model_path, "rb") as handle:
             payload = pickle.load(handle)
 
-        config = Agent2Config(**payload.get("config", {}))
+        config_payload = dict(payload.get("config", {}))
+        config = Agent2Config(
+            **{
+                key: value
+                for key, value in config_payload.items()
+                if key in Agent2Config.__dataclass_fields__
+            }
+        )
         return cls(
             config=config,
             classifier=payload.get("classifier"),
@@ -203,6 +213,7 @@ class Agent2DecisionMaker:
             feature_stats=payload.get("feature_stats"),
             trained=bool(payload.get("trained", False)),
             forced_label=payload.get("forced_label"),
+            policy_params=payload.get("policy_params"),
         )
 
     def save(self, checkpoint_dir: str | Path | None = None) -> None:
@@ -215,13 +226,17 @@ class Agent2DecisionMaker:
             "classifier": self.classifier,
             "trained": self.trained,
             "forced_label": self.forced_label,
+            "policy_params": asdict(self.policy.p),
         }
         with open(checkpoint_root / "agent2_policy.pkl", "wb") as handle:
             pickle.dump(payload, handle)
+        self.policy.checkpoint_path = checkpoint_root / "agent2_policy.json"
+        self.policy.save()
         metadata = {
             "backend": self.config.backend,
             "base_model_name": self.config.base_model_name,
             "trained": self.trained,
+            "policy": asdict(self.policy.p),
             "numeric_fields": self.numeric_fields,
             "checkpoint_dir": str(checkpoint_root).replace("\\", "/"),
         }
@@ -337,14 +352,31 @@ class Agent2DecisionMaker:
                 alpha=self.config.learning_rate,
                 max_iter=1,
                 warm_start=True,
-                class_weight="balanced",
                 random_state=self.config.seed,
             )
             self.classifier.partial_fit(vectors, labels, classes=self._classes, sample_weight=weights)
         else:
+            if getattr(self.classifier, "class_weight", None) == "balanced":
+                self.classifier.set_params(class_weight=None)
             self.classifier.partial_fit(vectors, labels, classes=self._classes, sample_weight=weights)
         self.trained = True
         self.forced_label = None
+
+    def update_policy(self, risk_score: float | None, decision: str, feedback: Any) -> dict[str, float]:
+        if risk_score is None:
+            return {}
+
+        try:
+            reward = float(feedback)
+        except (TypeError, ValueError):
+            oracle = feedback.get("decision") if isinstance(feedback, Mapping) else feedback
+            oracle_label = extract_decision(str(oracle))
+            policy_decision = extract_decision(str(decision))
+            if oracle_label == "INVALID" or policy_decision == "INVALID":
+                return {}
+            reward = 1.0 if policy_decision == oracle_label else -1.0
+
+        return self.policy.update(float(risk_score), str(decision), reward)
 
     def _heuristic_approve_probability(
         self,
@@ -419,20 +451,10 @@ class Agent2DecisionMaker:
         shap_info: Sequence[Mapping[str, Any]] | None = None,
     ) -> GenerationResult:
         prompt = format_prompt(features, risk_score, shap_info)
-        approve_probability = self.predict_approve_probability(
-            features=features,
-            risk_score=risk_score,
-            shap_info=shap_info,
-        )
-        raw_text = "APPROVE" if approve_probability >= 0.50 else "REJECT"
-        decision = extract_decision(raw_text)
-        if decision == "INVALID":
-            raw_text = "REJECT"
-            decision = "REJECT"
-            approve_probability = min(approve_probability, 0.49)
-
-        chosen_probability = approve_probability if decision == "APPROVE" else 1.0 - approve_probability
-        logprob = math.log(max(chosen_probability, 1e-8))
+        risk_score = float(risk_score)
+        approve_probability = float(np.clip(self.policy.p_approve(risk_score), 0.01, 0.99))
+        decision, logprob = self.policy.sample_action(risk_score)
+        raw_text = decision
         return GenerationResult(
             decision=decision,
             raw_text=raw_text,

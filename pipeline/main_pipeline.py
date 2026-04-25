@@ -327,15 +327,18 @@ class CreditDecisionPipeline:
         risk_score = float(self.agent1.predict(normalized_user))
         active_shap = list(shap_info) if shap_info is not None else self.agent1.explain(normalized_user)
         policy_output = self.agent2.generate_with_metadata(normalized_user, risk_score, active_shap)
+        decision = policy_output.decision
         active_env = env or CreditDecisionEnvironment(normalized_user)
-        raw_result = active_env.step(policy_output.decision)
+        raw_result = active_env.step(decision)
         result = _normalize_env_result(raw_result, active_env)
+        result["info"].setdefault("risk_score", risk_score)
+
         result.update(
             {
                 "user_data": normalized_user,
                 "risk_score": risk_score,
                 "shap_info": active_shap,
-                "decision": policy_output.decision,
+                "decision": decision,
                 "policy_output": {
                     "raw_text": policy_output.raw_text,
                     "prompt": policy_output.prompt,

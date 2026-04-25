@@ -60,6 +60,7 @@ class ResetRequest(BaseModel):
     task_name: str = "binary_decision"
     seed: Optional[int] = None
     session_id: Optional[str] = None
+    deception_level: Optional[float] = None
 
 
 class StepRequest(BaseModel):
@@ -148,13 +149,16 @@ def _build_response(
 
     oracle_risk = active_oracle.predict_risk(revealed) if revealed else 0.0
     oracle_confidence = active_oracle.get_confidence(revealed) if revealed else 0.0
+    top_factors = active_oracle.get_top_factors(revealed) if revealed else []
     explanation = str(observation.get("message") or info.get("explanation") or "")
     observation["oracle_risk"] = round(float(oracle_risk), 6)
     observation["oracle_confidence"] = round(float(oracle_confidence), 6)
+    observation["top_factors"] = top_factors
     state = active_env.state()
     response_info = dict(info)
     response_info["session_id"] = state.session_id
     response_info["episode_id"] = state.episode_id
+    response_info["top_factors"] = top_factors
 
     return FinVerseResponse(
         observation=observation,
@@ -163,6 +167,7 @@ def _build_response(
         explanation=explanation,
         oracle_risk=round(float(oracle_risk), 6),
         oracle_confidence=round(float(oracle_confidence), 6),
+        top_factors=top_factors,
         session_id=state.session_id,
         episode_id=state.episode_id,
         info=response_info,
@@ -183,6 +188,7 @@ def _invalid_step_response(active_env: CreditAnalystEnvironment, error: Exceptio
         explanation=f"invalid action: {str(error)}",
         oracle_risk=0.0,
         oracle_confidence=0.0,
+        top_factors=[],
         session_id=state.session_id,
         episode_id=state.episode_id,
         info={"error": str(error), "session_id": state.session_id, "episode_id": state.episode_id},
@@ -216,7 +222,11 @@ def reset(body: ResetRequest = ResetRequest()):
                 raise
             active_env = store.create(session_id)
         active_env.set_session_id(session_id)
-        observation = active_env.reset(task_name=body.task_name, seed=body.seed)
+        observation = active_env.reset(
+            task_name=body.task_name,
+            seed=body.seed,
+            deception_level=body.deception_level,
+        )
         store.save(active_env)
     finally:
         store._release_lock(fd, lock_path)

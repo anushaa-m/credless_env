@@ -43,6 +43,16 @@ class SessionApiTests(unittest.TestCase):
         self.assertEqual(payload["info"]["session_id"], payload["session_id"])
         self.assertEqual(payload["info"]["episode_id"], payload["episode_id"])
 
+    def test_reset_returns_storytelling_factors(self):
+        payload = self._reset(seed=1)
+
+        self.assertIn("top_factors", payload)
+        self.assertIn("top_factors", payload["observation"])
+        self.assertIn("top_factors", payload["info"])
+        self.assertIsInstance(payload["top_factors"], list)
+        self.assertGreater(len(payload["top_factors"]), 0)
+        self.assertIsInstance(payload["oracle_confidence"], float)
+
     def test_step_persists_state_for_session(self):
         payload = self._reset()
 

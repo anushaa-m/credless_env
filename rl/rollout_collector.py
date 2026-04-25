@@ -58,6 +58,10 @@ class RolloutCollector:
     def collect_one(self, user_data: Mapping[str, Any]) -> Trajectory:
         episode_id = str(uuid.uuid4())
         result = self.pipeline.run(dict(user_data))
+        policy_update = self._update_policy(result)
+        if policy_update:
+            result["info"]["policy_update"] = policy_update
+        print(f"[DEBUG] decision={result['decision']} reward={result['reward']}")
 
         transition = Transition(
             episode_id=episode_id,
@@ -76,6 +80,7 @@ class RolloutCollector:
                 "prompt": result["policy_output"]["prompt"],
                 "raw_text": result["policy_output"]["raw_text"],
                 "approve_probability": float(result["policy_output"]["approve_probability"]),
+                "policy_update": policy_update,
             },
         )
         summary = {
@@ -85,7 +90,9 @@ class RolloutCollector:
             "decision": str(result["decision"]),
             "risk_score": float(result["risk_score"]),
             "oracle_score": float(result["info"].get("oracle_score", 0.0)),
+            "oracle_decision": str(result["info"].get("oracle_decision", "")),
         }
+        summary.update(policy_update)
         trajectory = Trajectory(
             episode_id=episode_id,
             transitions=[transition],
@@ -100,3 +107,18 @@ class RolloutCollector:
             self.reward_logger.log_episode(summary)
 
         return trajectory
+
+    def _update_policy(self, result: Mapping[str, Any]) -> dict[str, Any]:
+        update_policy = getattr(self.pipeline.agent2, "update_policy", None)
+        if not callable(update_policy):
+            return {}
+
+        update_info = update_policy(
+            float(result["risk_score"]),
+            str(result["decision"]),
+            float(result["reward"]),
+        )
+        save_policy = getattr(self.pipeline.agent2, "save", None)
+        if callable(save_policy):
+            save_policy()
+        return dict(update_info or {})
