@@ -1,6 +1,7 @@
 # FinVerse End-to-End Pipeline
 
-This repo now exposes the drafted FinVerse-style flow end to end:
+This repo now exposes a multi-step credit investigation environment and
+end-to-end FinVerse-style pipeline:
 
 - preprocess real CSV or synthetic fallback
 - train or load a saved model
@@ -8,6 +9,10 @@ This repo now exposes the drafted FinVerse-style flow end to end:
 - run the deterministic oracle
 - score model outputs against oracle outputs
 - report target metrics including reject recall
+
+At the environment level, each episode is a 5-8 step lending investigation over
+20 engineered real-world features with market context, applicant/action
+history, and adversarial behavior such as fabricated or withheld fields.
 
 ## Current Structure
 

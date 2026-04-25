@@ -66,20 +66,20 @@ def _require_runtime() -> tuple[CreditAnalystEnvironment, CreditOracle]:
 
 def _build_response(observation_payload: dict[str, Any], *, reward: float, done: bool, info: dict[str, Any]) -> FinVerseResponse:
     active_env, active_oracle = _require_runtime()
-    observation = observation_payload.get("observation", observation_payload)
+    observation = dict(observation_payload.get("observation", observation_payload))
     revealed = active_env.oracle_features()
 
     oracle_risk = active_oracle.predict_risk(revealed) if revealed else 0.0
     oracle_confidence = active_oracle.get_confidence(revealed) if revealed else 0.0
-    top_factors = active_oracle.get_top_factors(revealed) if revealed else []
     explanation = str(observation.get("message") or info.get("explanation") or "")
+    observation["oracle_risk"] = round(float(oracle_risk), 6)
+    observation["oracle_confidence"] = round(float(oracle_confidence), 6)
 
     return FinVerseResponse(
         observation=observation,
         reward=round(float(reward), 4),
         done=bool(done),
         explanation=explanation,
-        top_factors=top_factors,
         oracle_risk=round(float(oracle_risk), 6),
         oracle_confidence=round(float(oracle_confidence), 6),
         info=dict(info),
@@ -98,7 +98,6 @@ def _invalid_step_response(error: Exception) -> FinVerseResponse:
         reward=-0.1,
         done=False,
         explanation=f"invalid action: {str(error)}",
-        top_factors=[],
         oracle_risk=0.0,
         oracle_confidence=0.0,
         info={"error": str(error)},

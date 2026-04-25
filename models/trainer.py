@@ -76,6 +76,14 @@ def build_model(seed: int):
     )
 
 
+def model_type_name(model: object) -> str:
+    if HAS_LGBM and isinstance(model, LGBMClassifier):
+        return "lightgbm"
+    if isinstance(model, LogisticRegression):
+        return "logistic_regression"
+    return type(model).__name__.lower()
+
+
 def save_artifacts(
     *,
     model,
@@ -89,6 +97,7 @@ def save_artifacts(
     jsonl_path: str,
 ) -> None:
     os.makedirs(MODEL_PATH.parent, exist_ok=True)
+    model_type = model_type_name(model)
 
     with open(SCALER_PATH, "wb") as handle:
         pickle.dump(scaler, handle)
@@ -96,7 +105,7 @@ def save_artifacts(
     artifact = {
         "model": model,
         "feature_cols": feature_cols,
-        "model_type": "lightgbm" if HAS_LGBM else "logistic_regression",
+        "model_type": model_type,
         "val_accuracy": round(float(val_acc), 4),
         "val_auc": round(float(val_auc), 4),
         "seed": int(seed),

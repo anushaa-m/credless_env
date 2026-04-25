@@ -24,7 +24,8 @@ min-max scaled to [0, 1] for logistic regression compatibility.  The pipeline
 returns BOTH the scaled 20-feature matrix AND the raw cleaned frame so
 downstream code (oracle, RL environment) can choose.
 
-Expected AUC improvement: 0.76 → 0.85+ with XGBoost on real data.
+Expected AUC improvement: 0.76 -> 0.85+ with the richer 20-feature schema on
+real data, subject to the downstream model choice.
 """
 
 from __future__ import annotations

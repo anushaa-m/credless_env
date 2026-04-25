@@ -27,6 +27,8 @@ class FinVerseObservation(Observation):
     applicant: Dict[str, Any] = Field(default_factory=dict)
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
     action_history: List[Dict[str, Any]] = Field(default_factory=list)
+    oracle_risk: float = Field(default=0.0)
+    oracle_confidence: float = Field(default=0.0)
     market_visible: bool = Field(default=False)
     market_queried: bool = Field(default=False)
     fraud_checked: bool = Field(default=False)

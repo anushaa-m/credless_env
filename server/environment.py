@@ -19,6 +19,10 @@ VALID_FRAUD_FLAG_REWARD = 0.05
 STEP_PENALTY = 0.01
 INVALID_ACTION_PENALTY = 0.5
 TIMEOUT_PENALTY = 1.0
+DUPLICATE_ACTION_PENALTY = 0.10
+NO_PROGRESS_LOOP_PENALTY = 0.15
+FREE_EXTRA_FIELD_REQUESTS = 2
+EXCESS_FIELD_REQUEST_PENALTY = 0.03
 POLICY_REQUIRED_FIELDS = {
     "easy": ["payment_reliability", "debt_burden_score"],
     "medium": ["payment_reliability", "debt_burden_score", "overdraft_risk"],
@@ -203,25 +207,65 @@ class CreditAnalystEnvironment(Environment):
                 "action_type": action.action_type,
                 "params": dict(action.params),
                 "reasoning": action.reasoning,
+                "signature": self._action_signature(action),
+                "progress_made": False,
             }
         )
 
-    def _action_repeat_penalty(self, action_type: str) -> float:
-        repeats = sum(1 for item in self.trajectory[:-1] if item.get("action_type") == action_type)
+    def _action_signature(self, action: FinVerseAction) -> str:
+        if action.action_type == "request_info":
+            return f"request_info:{str(action.params.get('field', '')).strip().lower()}"
+        if action.action_type == "flag_fraud":
+            reason = str(action.params.get("reason", "") or action.reasoning).strip().lower()
+            return f"flag_fraud:{reason}"
+        return action.action_type
+
+    def _signature_repeat_penalty(self, signature: str) -> float:
+        repeats = sum(1 for item in self.trajectory[:-1] if item.get("signature") == signature)
         if repeats <= 0:
             return 0.0
-        return 0.10 * repeats
+        return DUPLICATE_ACTION_PENALTY * repeats
 
-    def _apply_repeat_penalty(self, action_type: str) -> float:
-        duplicate_penalty = self._action_repeat_penalty(action_type)
-        if duplicate_penalty <= 0.0:
+    def _mark_last_action_progress(self, progress_made: bool) -> None:
+        if self.trajectory:
+            self.trajectory[-1]["progress_made"] = bool(progress_made)
+
+    def _no_progress_repeat_penalty(self, action: FinVerseAction) -> float:
+        if action.action_type in {"approve", "deny", "escalate"}:
             return 0.0
-        self._cumulative_reward -= duplicate_penalty
+        no_progress_streak = 0
+        for item in reversed(self.trajectory[:-1]):
+            if item.get("action_type") != action.action_type:
+                break
+            if item.get("progress_made", False):
+                break
+            no_progress_streak += 1
+        if no_progress_streak <= 0:
+            return 0.0
+        return NO_PROGRESS_LOOP_PENALTY * no_progress_streak
+
+    def _apply_repeat_penalties(self, action: FinVerseAction) -> float:
+        penalties_to_apply: Dict[str, float] = {}
+        duplicate_penalty = self._signature_repeat_penalty(self._action_signature(action))
+        if duplicate_penalty > 0.0:
+            penalties_to_apply["duplicate_action"] = round(duplicate_penalty, 4)
+        no_progress_penalty = self._no_progress_repeat_penalty(action)
+        if no_progress_penalty > 0.0:
+            penalties_to_apply["no_progress_loop"] = round(no_progress_penalty, 4)
+        total_penalty = round(sum(penalties_to_apply.values()), 4)
+        if total_penalty <= 0.0:
+            return 0.0
+        self._cumulative_reward -= total_penalty
         penalties = dict(self._last_info.get("penalties_applied", {}))
-        penalties["duplicate_action"] = round(duplicate_penalty, 4)
+        penalties.update(penalties_to_apply)
         self._last_info["penalties_applied"] = penalties
         self._last_info["cumulative_reward"] = round(self._cumulative_reward, 4)
-        return duplicate_penalty
+        return total_penalty
+
+    def _record_reward_components(self, **components: float) -> Dict[str, float]:
+        filtered = {name: round(float(value), 4) for name, value in components.items() if abs(float(value)) > 0.0}
+        self._last_info["reward_components"] = filtered
+        return filtered
 
     def _wrap_step_result(self, observation: FinVerseObservation) -> Dict[str, Any]:
         return {
@@ -244,6 +288,9 @@ class CreditAnalystEnvironment(Environment):
             self._last_info.get("oracle_score", 0.0),
             penalties,
         )
+        reward_components = dict(self._last_info.get("reward_components", {}))
+        reward_components["timeout"] = round(reward_components.get("timeout", 0.0) - TIMEOUT_PENALTY, 4)
+        self._last_info["reward_components"] = reward_components
         return self._build_observation(
             step_reward=reward,
             done=True,
@@ -330,6 +377,12 @@ class CreditAnalystEnvironment(Environment):
             0.0,
             {"invalid_action": penalty, "efficiency": STEP_PENALTY},
         )
+        self._record_reward_components(
+            invalid_action=-penalty,
+            efficiency=-STEP_PENALTY,
+            format_compliance=-penalty,
+        )
+        self._mark_last_action_progress(False)
         return self._build_observation(step_reward=reward, message=message)
 
     def _ensure_active(self) -> Optional[FinVerseObservation]:
@@ -408,14 +461,28 @@ class CreditAnalystEnvironment(Environment):
             ),
         )
 
-        reward = VALID_FIELD_REQUEST_REWARD - STEP_PENALTY
+        excess_requests = max(
+            0,
+            len(self._requested_fields) - len(self._current_policy.get("required_fields", [])) - FREE_EXTRA_FIELD_REQUESTS,
+        )
+        over_collection_penalty = EXCESS_FIELD_REQUEST_PENALTY * excess_requests
+        reward = VALID_FIELD_REQUEST_REWARD - STEP_PENALTY - over_collection_penalty
         self._refresh_current_observation()
         self._cumulative_reward += reward
+        penalties = {"valid_field_request": VALID_FIELD_REQUEST_REWARD, "efficiency": STEP_PENALTY}
+        if over_collection_penalty > 0.0:
+            penalties["excess_data_request"] = round(over_collection_penalty, 4)
         self._set_last_info(
             f"Revealed '{field}' from applicant response.",
             0.0,
-            {"valid_field_request": VALID_FIELD_REQUEST_REWARD, "efficiency": STEP_PENALTY},
+            penalties,
         )
+        self._record_reward_components(
+            valid_field_request=VALID_FIELD_REQUEST_REWARD,
+            efficiency=-STEP_PENALTY,
+            excess_data_request=-over_collection_penalty,
+        )
+        self._mark_last_action_progress(True)
         return self._build_observation(
             step_reward=reward,
             message=f"Revealed '{field}' from applicant response.",
@@ -442,6 +509,11 @@ class CreditAnalystEnvironment(Environment):
             0.0,
             {"market_research": VALID_MARKET_QUERY_REWARD, "efficiency": STEP_PENALTY},
         )
+        self._record_reward_components(
+            market_research=VALID_MARKET_QUERY_REWARD,
+            efficiency=-STEP_PENALTY,
+        )
+        self._mark_last_action_progress(True)
         return self._build_observation(
             step_reward=reward,
             message="Market conditions revealed.",
@@ -464,6 +536,11 @@ class CreditAnalystEnvironment(Environment):
             0.0,
             {"fraud_review": VALID_FRAUD_FLAG_REWARD, "efficiency": STEP_PENALTY},
         )
+        self._record_reward_components(
+            fraud_review=VALID_FRAUD_FLAG_REWARD,
+            efficiency=-STEP_PENALTY,
+        )
+        self._mark_last_action_progress(True)
         return self._build_observation(
             step_reward=reward,
             message="Fraud flag recorded for downstream review.",
@@ -517,6 +594,13 @@ class CreditAnalystEnvironment(Environment):
             oracle_decision=oracle_decision,
             oracle_confidence=confidence,
         )
+        self._record_reward_components(
+            correctness=penalties.get("terminal_reward", 0.0),
+            confidence_bonus=penalties.get("confidence_bonus", 0.0),
+            fast_resolution_bonus=penalties.get("fast_resolution_bonus", 0.0),
+            efficiency=-STEP_PENALTY,
+        )
+        self._mark_last_action_progress(True)
         return self._build_observation(
             step_reward=reward,
             done=True,
@@ -551,9 +635,12 @@ class CreditAnalystEnvironment(Environment):
         else:
             observation = self._invalid(f"Unsupported action type '{parsed_action.action_type}'.", penalty=0.25)
 
-        duplicate_penalty = self._apply_repeat_penalty(parsed_action.action_type)
-        if duplicate_penalty > 0.0:
-            adjusted_reward = float(observation.step_reward) - duplicate_penalty
+        repeat_penalty = self._apply_repeat_penalties(parsed_action)
+        if repeat_penalty > 0.0:
+            adjusted_reward = float(observation.step_reward) - repeat_penalty
+            reward_components = dict(self._last_info.get("reward_components", {}))
+            reward_components["anti_hacking"] = round(reward_components.get("anti_hacking", 0.0) - repeat_penalty, 4)
+            self._last_info["reward_components"] = reward_components
             if observation.done:
                 self._last_episode_score = adjusted_reward
                 if self._auditor_compliance_log:

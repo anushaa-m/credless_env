@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "credless-env"
 version = "1.0.0"
-description = "FinVerse end-to-end credit decision pipeline with training, inference, oracle scoring, and packaging"
+description = "Multi-step credit investigation environment with 20 engineered real-world features, adversarial applicant interactions, training, inference, and oracle scoring"
 requires-python = ">=3.10"
 dependencies = [
     "openenv==0.1.13",
