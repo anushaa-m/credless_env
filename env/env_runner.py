@@ -21,8 +21,68 @@ import numpy as np
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
+import re
+import torch
 
 load_dotenv()
+
+# ===== LLM POLICY SWITCH =====
+USE_LLM_POLICY = True
+
+# ===== LLM HELPER FUNCTIONS =====
+def extract_json_safe(text):
+    try:
+        if "FINAL ANSWER:" in text:
+            text = text.split("FINAL ANSWER:")[-1]
+
+        match = re.search(r"\{.*?\}", text, re.DOTALL)
+        if not match:
+            raise ValueError
+
+        return json.loads(match.group())
+    except Exception:
+        return {
+            "action_type": "reject",
+            "params": {},
+            "reasoning": "fallback",
+        }
+
+
+def generate_action(model, tokenizer, observation):
+    prompt = f"""
+You are a credit decision agent.
+
+Observation:
+{observation}
+
+Return ONLY JSON:
+
+{{
+  "action_type": "approve or reject",
+  "params": {{}},
+  "reasoning": "short"
+}}
+
+FINAL ANSWER:
+"""
+    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=100,
+            temperature=0.7,
+            do_sample=True,
+        )
+
+    text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    action = extract_json_safe(text)
+
+    action.setdefault("params", {})
+    action.setdefault("reasoning", "")
+    action["action_type"] = action["action_type"].lower()
+
+    return action
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
@@ -62,6 +122,8 @@ SYSTEM_PROMPT = (
 )
 
 client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN) if HF_TOKEN else None
+model = None
+tokenizer = None
 
 
 def strict_score(value: float) -> float:
@@ -413,9 +475,11 @@ class PPOPolicy:
 
 
 class EnvironmentRunner:
-    def __init__(self, env_base_url: str = ENV_BASE_URL, model_name: str = MODEL_NAME):
+    def __init__(self, env_base_url: str = ENV_BASE_URL, model_name: str = MODEL_NAME, model=None, tokenizer=None):
         self.env_base_url = env_base_url.rstrip("/")
         self.model_name = model_name
+        self.model = model
+        self.tokenizer = tokenizer
 
     def log_start(self, task: str) -> None:
         print(f"[START] task={task} env={BENCHMARK} model={self.model_name}", flush=True)
@@ -513,7 +577,10 @@ class EnvironmentRunner:
                     action_idx, _log_prob, _value = ppo_policy.sample_action(state, mask, rng)
                     action = discrete_to_env_action(action_idx, observation)
                 else:
-                    action = self.call_model(observation, task_name)
+                    if USE_LLM_POLICY and self.model is not None:
+                        action = generate_action(self.model, self.tokenizer, observation)
+                    else:
+                        action = self.call_model(observation, task_name)
 
                 action_str = format_action(action)
                 error = None
@@ -685,7 +752,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    runner = EnvironmentRunner()
+    runner = EnvironmentRunner(model=model, tokenizer=tokenizer)
 
     if args.mode == "rollout":
         tasks = [args.task] if args.task else TASKS
