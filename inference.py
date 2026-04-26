@@ -64,8 +64,11 @@ def _local_oracle_payload(env: CreditAnalystEnvironment) -> dict[str, Any]:
     revealed = env.oracle_features()
     merged = {field: 0.5 for field in getattr(env.oracle, "feature_order", [])}
     merged.update(revealed)
-    oracle_risk = float(env.oracle.predict_risk(merged, market_condition=env._market_state["name"]))  # type: ignore[attr-defined]
+    market_state = dict(env._market_state)  # type: ignore[attr-defined]
+    oracle_result = env.oracle.predict(merged, market_condition=market_state["name"])
+    oracle_risk = float(oracle_result.get("default_prob", 0.0))
     oracle_confidence = float(max(oracle_risk, 1.0 - oracle_risk))
+    thresholds = dict(oracle_result.get("thresholds", {}))
     top_factors = [
         [str(item["feature"]), float(item["contribution"])]
         for item in env.risk_predictor.explain(merged, top_k=5)
@@ -73,6 +76,10 @@ def _local_oracle_payload(env: CreditAnalystEnvironment) -> dict[str, Any]:
     return {
         "oracle_risk": oracle_risk,
         "oracle_confidence": oracle_confidence,
+        "market_state": market_state,
+        "base_threshold": thresholds.get("base_medium_risk"),
+        "dynamic_threshold": thresholds.get("dynamic_threshold", thresholds.get("medium_risk")),
+        "market_risk_index": thresholds.get("market_risk_index"),
         "top_factors": top_factors,
     }
 
@@ -297,6 +304,10 @@ def _run_one_local(agent1: Any, agent2: Any, episode_seed: int) -> dict[str, Any
         "risk_score": round(risk_score, 6),
         "oracle_risk": round(float(oracle_payload.get("oracle_risk", 0.0)), 6),
         "oracle_confidence": round(float(oracle_payload.get("oracle_confidence", 0.0)), 6),
+        "market_state": dict(oracle_payload.get("market_state", {})),
+        "base_threshold": final_result["info"].get("base_threshold", oracle_payload.get("base_threshold")),
+        "dynamic_threshold": final_result["info"].get("dynamic_threshold", oracle_payload.get("dynamic_threshold")),
+        "market_risk_index": final_result["info"].get("market_risk_index", oracle_payload.get("market_risk_index")),
         "top_factors": list(oracle_payload.get("top_factors", [])),
         "decision": final_action,
         "reward": round(float(final_result["reward"]), 6),
@@ -313,11 +324,22 @@ def _aggregate_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     rewards = np.array([float(item["reward"]) for item in results], dtype=float)
     approvals = [str(item["decision"]) for item in results]
     oracle_matches = [1.0 if _oracle_agreed(item["decision"], item["oracle_decision"]) else 0.0 for item in results]
+    dynamic_thresholds = [
+        float(item["dynamic_threshold"])
+        for item in results
+        if item.get("dynamic_threshold") is not None
+    ]
+    market_counts: dict[str, int] = {}
+    for item in results:
+        market_name = str(dict(item.get("market_state", {})).get("name", "unknown"))
+        market_counts[market_name] = market_counts.get(market_name, 0) + 1
     return {
         "mean_reward": round(float(rewards.mean()), 6) if len(rewards) else 0.0,
         "approve_rate": round(approvals.count("APPROVE") / len(approvals), 6) if approvals else 0.0,
         "oracle_agreement": round(float(np.mean(oracle_matches)), 6) if oracle_matches else 0.0,
         "oracle_agreement_count": int(sum(oracle_matches)),
+        "mean_dynamic_threshold": round(float(np.mean(dynamic_thresholds)), 6) if dynamic_thresholds else 0.0,
+        "market_counts": market_counts,
         "episodes": len(results),
     }
 
@@ -348,6 +370,10 @@ def main() -> None:
                 "risk_score": item["risk_score"],
                 "oracle_risk": item["oracle_risk"],
                 "oracle_confidence": item["oracle_confidence"],
+                "market_state": item["market_state"],
+                "base_threshold": item["base_threshold"],
+                "dynamic_threshold": item["dynamic_threshold"],
+                "market_risk_index": item["market_risk_index"],
                 "top_factors": item["top_factors"],
                 "decision": item["decision"],
                 "reward": item["reward"],

@@ -727,6 +727,11 @@ class CreditAnalystEnvironment(Environment):
             oracle_decision=oracle_decision,
             oracle_confidence=confidence,
         )
+        thresholds = dict(self._ground_truth.get("thresholds", {}))
+        self._last_info["market_state"] = dict(self._market_state)
+        self._last_info["dynamic_threshold"] = thresholds.get("dynamic_threshold", thresholds.get("medium_risk"))
+        self._last_info["base_threshold"] = thresholds.get("base_medium_risk")
+        self._last_info["market_risk_index"] = thresholds.get("market_risk_index")
         self._record_reward_components(
             task_score=evaluation.get("task_score", 0.0),
             auditor_score=evaluation.get("auditor_score", 0.0),

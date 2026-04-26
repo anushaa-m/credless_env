@@ -38,6 +38,34 @@ credless_env/
 - Root `inference.py` runs two-agent CredLess evaluation against `CreditAnalystEnvironment`.
 - `server/` owns live OpenEnv environment, oracle, and grading path.
 
+## Dynamic Risk-Based Oracle
+
+CredLess uses a macro-prudential risk layer instead of a fixed decision boundary.
+The ground-truth oracle now mutates the default-risk threshold using the hidden
+market state:
+
+```text
+dynamic_default_threshold = base_threshold / market_risk_index
+```
+
+This keeps the decision semantics correct for default probability: a higher
+market risk index lowers the acceptable default-risk cutoff and makes approvals
+more conservative. A lower index relaxes the cutoff during favorable markets.
+
+| Market State | Risk Index | Effective Threshold | Analyst Stance |
+| --- | ---: | ---: | --- |
+| Economic Boom | 0.92 | ~0.40 | Aggressive: higher approval tolerance |
+| Stable Credit | 1.00 | ~0.37 | Neutral baseline |
+| Recession | 1.18 | ~0.31 | Conservative: lower default-risk tolerance |
+
+The agent should query market conditions before a terminal approval or denial.
+The same applicant can be approved in a boom and denied in a recession because
+the oracle threshold changes with the hidden macro state.
+
+`inference.py` logs `market_state`, `market_risk_index`, `base_threshold`, and
+`dynamic_threshold` for every episode so before/after market-aware behavior can
+be compared directly.
+
 ## Commands
 
 Train CredLess Agent 1:

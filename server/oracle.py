@@ -70,6 +70,10 @@ def _clamp_threshold(value: float, lo: float = 0.10, hi: float = 0.90) -> float:
     return float(np.clip(value, lo, hi))
 
 
+def _market_dynamic_threshold(base_threshold: float, market_index: float) -> float:
+    return _clamp_threshold(float(base_threshold) / max(float(market_index), 1e-6))
+
+
 def _derive_thresholds_from_scalar(threshold: float) -> tuple[float, float]:
     low_risk_threshold = max(0.10, min(float(threshold) - 0.05, float(threshold) * 0.60))
     medium_risk_threshold = max(low_risk_threshold + 0.05, min(0.90, float(threshold)))
@@ -195,8 +199,11 @@ class CredLessOracle:
     def predict(self, features: Dict[str, float], market_condition: str = "Stable Credit") -> Dict[str, object]:
         config = MARKET_SCENARIOS.get(market_condition, MARKET_SCENARIOS["Stable Credit"])
         prob = self.predict_risk(features, market_condition=market_condition)
-        low_thresh = _clamp_threshold(self.low_thresh + float(config["threshold_delta"]))
-        high_thresh = _clamp_threshold(self.high_thresh + float(config["threshold_delta"]), lo=low_thresh + 0.05)
+        market_index = float(config["risk_multiplier"])
+        low_thresh = _market_dynamic_threshold(self.low_thresh, market_index)
+        high_thresh = _market_dynamic_threshold(self.high_thresh, market_index)
+        if high_thresh <= low_thresh:
+            high_thresh = _clamp_threshold(low_thresh + 0.05, lo=low_thresh + 0.05)
         confidence = _decision_confidence(prob, high_thresh)
 
         if prob < low_thresh:
@@ -213,8 +220,13 @@ class CredLessOracle:
             "confidence": round(confidence, 6),
             "market_condition": market_condition,
             "thresholds": {
+                "base_low_risk": round(float(self.low_thresh), 4),
+                "base_medium_risk": round(float(self.high_thresh), 4),
                 "low_risk": round(low_thresh, 4),
                 "medium_risk": round(high_thresh, 4),
+                "dynamic_threshold": round(high_thresh, 4),
+                "market_risk_index": round(market_index, 4),
+                "scaling": "base_threshold / market_risk_index",
             },
             "market_summary": config["summary"],
         }
