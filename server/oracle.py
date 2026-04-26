@@ -213,9 +213,13 @@ class CredLessOracle:
         else:
             tier, decision = "high_risk", "deny"
 
+        recommended_action = "conditional_approve" if tier == "medium_risk" else decision
+
         return {
             "tier": tier,
             "decision": decision,
+            "recommended_action": recommended_action,
+            "conditional_candidate": tier == "medium_risk",
             "default_prob": round(prob, 6),
             "confidence": round(confidence, 6),
             "market_condition": market_condition,
@@ -264,6 +268,8 @@ class CredLessOracle:
         return {
             "decision": result["decision"],
             "tier": result["tier"],
+            "recommended_action": result.get("recommended_action", result["decision"]),
+            "conditional_candidate": bool(result.get("conditional_candidate", False)),
             "default_risk": round(risk, 6),
             "confidence": round(float(result["confidence"]), 6),
             "feature_contributions": [(name, round(value, 6)) for name, value in top],

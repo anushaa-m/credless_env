@@ -294,7 +294,7 @@ class CreditAnalystEnvironment(Environment):
             self.trajectory[-1]["progress_made"] = bool(progress_made)
 
     def _no_progress_repeat_penalty(self, action: FinVerseAction) -> float:
-        if action.action_type in {"approve", "deny", "escalate"}:
+        if action.action_type in {"approve", "conditional_approve", "deny", "escalate"}:
             return 0.0
         no_progress_streak = 0
         for item in reversed(self.trajectory[:-1]):
@@ -496,6 +496,8 @@ class CreditAnalystEnvironment(Environment):
         normalized = raw.lower()
         if raw == "APPROVE" or normalized == "approve":
             return FinVerseAction(action_type="approve", params={}, reasoning="")
+        if normalized == "conditional_approve":
+            return FinVerseAction(action_type="conditional_approve", params={}, reasoning="")
         if raw == "REJECT" or normalized in {"reject", "deny"}:
             return FinVerseAction(action_type="deny", params={}, reasoning="")
         if normalized in {"query_market", "escalate"}:
@@ -506,7 +508,7 @@ class CreditAnalystEnvironment(Environment):
 
     def _oracle_score_for_decision(self, decision: str) -> float:
         default_prob = float(self._ground_truth.get("default_prob", 0.5))
-        if decision == "approve":
+        if decision in {"approve", "conditional_approve"}:
             return round(max(0.0, min(1.0, 1.0 - default_prob)), 4)
         if decision == "deny":
             return round(max(0.0, min(1.0, default_prob)), 4)
@@ -673,13 +675,17 @@ class CreditAnalystEnvironment(Environment):
             market_condition=self._market_state["name"],
         )
         confidence = float(self._ground_truth.get("confidence", 0.5))
+        terminal_decision = "approve" if action.action_type == "conditional_approve" else action.action_type
         final_action = {
             "action_type": action.action_type,
-            "decision": action.action_type,
+            "decision": terminal_decision,
             "tier": action.params.get("tier"),
             "rate": action.params.get("rate"),
+            "max_amount": action.params.get("max_amount"),
             "expected_rate": self._market_state.get("base_rate"),
             "reasoning": action.reasoning,
+            "top_factors": explanation.get("feature_contributions", []),
+            "default_prob": self._ground_truth.get("default_prob"),
         }
         auditor_result = audit_terminal_action(
             final_action=final_action,
@@ -732,6 +738,11 @@ class CreditAnalystEnvironment(Environment):
         self._last_info["dynamic_threshold"] = thresholds.get("dynamic_threshold", thresholds.get("medium_risk"))
         self._last_info["base_threshold"] = thresholds.get("base_medium_risk")
         self._last_info["market_risk_index"] = thresholds.get("market_risk_index")
+        self._last_info["recommended_terminal_action"] = self._ground_truth.get(
+            "recommended_action",
+            self._ground_truth.get("decision"),
+        )
+        self._last_info["conditional_candidate"] = bool(self._ground_truth.get("conditional_candidate", False))
         self._record_reward_components(
             task_score=evaluation.get("task_score", 0.0),
             auditor_score=evaluation.get("auditor_score", 0.0),
@@ -771,7 +782,7 @@ class CreditAnalystEnvironment(Environment):
             observation = self._handle_query_market()
         elif parsed_action.action_type == "flag_fraud":
             observation = self._handle_flag_fraud(parsed_action)
-        elif parsed_action.action_type in {"approve", "deny", "escalate"}:
+        elif parsed_action.action_type in {"approve", "conditional_approve", "deny", "escalate"}:
             observation = self._handle_terminal(parsed_action)
         else:
             observation = self._invalid(f"Unsupported action type '{parsed_action.action_type}'.", penalty=0.25)

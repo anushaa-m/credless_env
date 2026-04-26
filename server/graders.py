@@ -35,8 +35,11 @@ def audit_terminal_action(
 ) -> Dict[str, float]:
     reasoning = str(final_action.get("reasoning") or "").strip().lower()
     decision = str(final_action.get("decision") or "").strip().lower()
+    action_type = str(final_action.get("action_type") or "").strip().lower()
+    oracle_decision = str(oracle_truth.get("decision", "")).lower()
+    effective_decision = "approve" if action_type == "conditional_approve" else decision
 
-    oracle_alignment = 1.0 if decision == str(oracle_truth.get("decision", "")).lower() else 0.15
+    oracle_alignment = 1.0 if effective_decision == oracle_decision else 0.15
     evidence_terms = [field.lower() for field in revealed_fields]
     evidence_hits = sum(
         1 for field in evidence_terms if field in reasoning or field.replace("_", " ") in reasoning
@@ -45,6 +48,17 @@ def audit_terminal_action(
     market_score = 1.0 if (not market_visible or _contains_any_reasoning_term(reasoning, ["market", "rate", "inflation", "recession", "boom"])) else 0.45
     fraud_score = 1.0 if (not fraud_flags or _contains_any_reasoning_term(reasoning, ["fraud", "confidence", "inconsistent", "verification"])) else 0.55
     reasoning_score = 0.20 if len(reasoning) < 30 else min(1.0, 0.35 + evidence_score * 0.35 + market_score * 0.15 + fraud_score * 0.15)
+
+    conditional_reasoning_score = 1.0
+    if action_type == "conditional_approve":
+        top_factors = [str(item[0]).lower() for item in (final_action.get("top_factors") or []) if isinstance(item, (list, tuple)) and item]
+        needs_risk_premium = "overdraft_risk" in top_factors or "total_delinquency_score" in top_factors or "debt_burden_score" in top_factors
+        mentions_premium = _contains_any_reasoning_term(
+            reasoning,
+            ["overdraft", "delinquency", "debt burden", "rate", "premium", "conditional", "max amount", "limit"],
+        )
+        conditional_reasoning_score = 1.0 if (mentions_premium and (needs_risk_premium or len(top_factors) == 0)) else 0.35
+        reasoning_score = min(reasoning_score, conditional_reasoning_score)
 
     bias_penalty = 0.0
     for term in PROTECTED_TERMS:
@@ -56,6 +70,7 @@ def audit_terminal_action(
         "score": round(total, 4),
         "oracle_alignment": round(oracle_alignment, 4),
         "reasoning_score": round(reasoning_score, 4),
+        "conditional_reasoning_score": round(float(conditional_reasoning_score), 4),
         "bias_penalty": round(bias_penalty, 4),
     }
 
@@ -71,6 +86,7 @@ def evaluate_terminal_action(
 ) -> Dict[str, float]:
     action_type = str(final_action.get("action_type") or "").lower()
     decision = str(final_action.get("decision") or action_type).lower()
+    oracle_tier = str(oracle_truth.get("tier", "")).lower()
 
     if action_type == "escalate":
         base_score = 0.35
@@ -82,6 +98,37 @@ def evaluate_terminal_action(
             "reward": reward,
             "efficiency_penalty": 0.0,
             "fraud_bonus": 0.0,
+        }
+
+    if action_type == "conditional_approve":
+        rate = final_action.get("rate")
+        max_amount = final_action.get("max_amount")
+        has_terms = isinstance(rate, (int, float)) and isinstance(max_amount, (int, float))
+        terms_penalty = 0.0 if has_terms else 0.2
+
+        if oracle_tier == "medium_risk" and str(oracle_truth.get("decision", "")).lower() == "approve":
+            task_score = max(0.0, 0.6 - terms_penalty)
+        elif oracle_tier == "high_risk":
+            task_score = 0.0
+        else:
+            # Low-risk profiles should receive clear approve terms, not unnecessary conditional friction.
+            task_score = 0.1
+
+        auditor_score = float(auditor_result.get("score", 0.0))
+        request_penalty = max(0, requests_made - 3) * 0.08
+        market_penalty = 0.05 if not queried_market else 0.0
+        fraud_bonus = 0.15 if fraud_flags and applicant_is_fraudulent else 0.0
+        false_alarm_penalty = 0.10 if fraud_flags and not applicant_is_fraudulent else 0.0
+
+        episode_score = strict_score(0.65 * task_score + 0.35 * auditor_score)
+        reward = round(episode_score - request_penalty - market_penalty + fraud_bonus - false_alarm_penalty, 4)
+        return {
+            "task_score": round(task_score, 4),
+            "auditor_score": round(auditor_score, 4),
+            "episode_score": episode_score,
+            "reward": reward,
+            "efficiency_penalty": round(request_penalty + market_penalty + false_alarm_penalty, 4),
+            "fraud_bonus": round(fraud_bonus, 4),
         }
 
     accuracy = 1.0 if decision == str(oracle_truth.get("decision", "")).lower() else 0.0

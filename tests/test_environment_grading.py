@@ -100,6 +100,62 @@ class EnvironmentGradingTests(unittest.TestCase):
 
         self.assertGreater(strong.step_reward, weak.step_reward)
 
+    def test_conditional_approve_rewarded_for_medium_risk(self):
+        env = build_env()
+        env._ground_truth.update(
+            {
+                "decision": "approve",
+                "tier": "medium_risk",
+                "default_prob": 0.34,
+                "recommended_action": "conditional_approve",
+                "conditional_candidate": True,
+            }
+        )
+        env.oracle.explain_decision = Mock(
+            return_value={
+                "explanation": "medium risk with overdraft pressure",
+                "feature_contributions": [("overdraft_risk", 0.21), ("debt_burden_score", 0.18)],
+            }
+        )
+
+        observation = env._handle_terminal(
+            FinVerseAction(
+                action_type="conditional_approve",
+                reasoning="Conditional approval with elevated rate due to overdraft risk.",
+                params={"rate": 14.5, "max_amount": 50000},
+            )
+        )
+        self.assertTrue(observation.done)
+        self.assertGreater(observation.step_reward, 0.30)
+
+    def test_conditional_approve_penalized_for_high_risk(self):
+        env = build_env()
+        env._ground_truth.update(
+            {
+                "decision": "deny",
+                "tier": "high_risk",
+                "default_prob": 0.81,
+                "recommended_action": "deny",
+                "conditional_candidate": False,
+            }
+        )
+        env.oracle.explain_decision = Mock(
+            return_value={
+                "explanation": "high risk profile",
+                "feature_contributions": [("total_delinquency_score", 0.35)],
+            }
+        )
+
+        observation = env._handle_terminal(
+            FinVerseAction(
+                action_type="conditional_approve",
+                reasoning="Conditional terms despite high delinquency.",
+                params={"rate": 14.5, "max_amount": 25000},
+            )
+        )
+        self.assertTrue(observation.done)
+        self.assertLess(observation.step_reward, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

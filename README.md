@@ -66,6 +66,36 @@ the oracle threshold changes with the hidden macro state.
 `dynamic_threshold` for every episode so before/after market-aware behavior can
 be compared directly.
 
+## Reward-Hacking Protection: Threshold Persistence
+
+The standalone training entrypoint now guarantees `risk_thresholds` are saved in
+`credless_model/model.pkl` (`low_risk`, `medium_risk`) using trained values. This
+prevents server-oracle fallback defaults (`0.40`, `0.70`) and keeps tiered
+decisions aligned with training-time calibration, improving observable inference
+metrics such as reject recall and ROC-AUC.
+
+## New Terminal Action: `conditional_approve`
+
+CredLess now supports nuanced terminal decisions:
+
+- `approve` for clear low-risk approvals
+- `conditional_approve` for medium-risk ("yellow-zone") applicants with terms
+- `deny` for high-risk applicants
+
+`conditional_approve` accepts:
+
+```json
+{
+  "action_type": "conditional_approve",
+  "params": { "rate": 14.5, "max_amount": 50000 },
+  "reasoning": "Approved with elevated rate given overdraft_risk"
+}
+```
+
+Reward shaping is anti-hacking by design: medium-risk conditional approvals score
+better than a wrong hard decision, while misuse on clear low/high-risk profiles
+is penalized.
+
 ## Commands
 
 Train CredLess Agent 1:

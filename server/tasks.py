@@ -7,7 +7,7 @@ from .data_generator import FIELD_RANGES
 PIPELINE_DESCRIPTION = (
     "Each episode is a stateful lending investigation. The agent can request additional "
     "applicant fields, reveal market conditions, raise fraud flags, and must finish with "
-    "approve, deny, or escalate plus reasoning."
+    "approve, conditional_approve, deny, or escalate plus reasoning."
 )
 
 TASK_REGISTRY = [
@@ -22,6 +22,7 @@ TASK_REGISTRY = [
             "query_market": {"action_type": "query_market", "params": {}},
             "flag_fraud": {"action_type": "flag_fraud", "params": {"reason": "string"}},
             "approve": {"action_type": "approve", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
+            "conditional_approve": {"action_type": "conditional_approve", "params": {"rate": "float", "max_amount": "int | float"}, "reasoning": "string"},
             "deny": {"action_type": "deny", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
             "escalate": {"action_type": "escalate", "params": {"review_note": "optional"}, "reasoning": "string"},
             "simple_binary_input": "APPROVE | REJECT",
@@ -38,6 +39,7 @@ TASK_REGISTRY = [
             "query_market": {"action_type": "query_market", "params": {}},
             "flag_fraud": {"action_type": "flag_fraud", "params": {"reason": "string"}},
             "approve": {"action_type": "approve", "params": {"tier": "low_risk | medium_risk | high_risk", "rate": "float"}, "reasoning": "string"},
+            "conditional_approve": {"action_type": "conditional_approve", "params": {"rate": "float", "max_amount": "int | float"}, "reasoning": "string"},
             "deny": {"action_type": "deny", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
             "escalate": {"action_type": "escalate", "params": {"review_note": "optional"}, "reasoning": "string"},
             "simple_binary_input": "APPROVE | REJECT",
@@ -54,6 +56,7 @@ TASK_REGISTRY = [
             "query_market": {"action_type": "query_market", "params": {}},
             "flag_fraud": {"action_type": "flag_fraud", "params": {"reason": "string"}},
             "approve": {"action_type": "approve", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
+            "conditional_approve": {"action_type": "conditional_approve", "params": {"rate": "float", "max_amount": "int | float"}, "reasoning": "string"},
             "deny": {"action_type": "deny", "params": {"tier": "optional", "rate": "optional float"}, "reasoning": "string"},
             "escalate": {"action_type": "escalate", "params": {"review_note": "optional"}, "reasoning": "string"},
             "simple_binary_input": "APPROVE | REJECT",

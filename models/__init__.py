@@ -12,6 +12,7 @@ FinVerseActionType = Literal[
     "query_market",
     "flag_fraud",
     "approve",
+    "conditional_approve",
     "deny",
     "escalate",
 ]
