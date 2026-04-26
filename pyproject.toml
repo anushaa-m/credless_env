@@ -5,12 +5,10 @@ build-backend = "hatchling.build"
 [project]
 name = "credless-env"
 version = "1.0.0"
-description = "CredLess Credit Analyst — OpenEnv RL environment for alternative credit scoring"
-readme = "README.md"
-license = { text = "MIT" }
+description = "CredLess Credit Analyst — OpenEnv RL environment"
 requires-python = ">=3.10"
 dependencies = [
-    "openenv-core @ git+https://github.com/meta-pytorch/OpenEnv.git",
+    "openenv==0.1.13",
     "fastapi",
     "uvicorn[standard]",
     "pydantic>=2.0",
@@ -19,21 +17,19 @@ dependencies = [
     "numpy>=1.24",
     "openai>=1.0",
     "requests",
+    "python-dotenv",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest", "httpx"]
+# ✅ ADD THIS — fixes Issue 1
+[project.scripts]
+server = "server.app:main"
+credless-server = "server.app:main"
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
 
-[tool.hatch.envs.default]
-dependencies = ["pytest", "httpx"]
-
 [tool.hatch.envs.default.scripts]
 server = "uvicorn server.app:app --host 0.0.0.0 --port 7860 --reload"
 train  = "python credless_model/train.py"
-test   = "pytest tests/"
-
-[project.scripts]
-server = "server.app:main"

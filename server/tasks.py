@@ -3,7 +3,7 @@
 Task registry — single source of truth for task metadata.
 Consumed by /tasks endpoint and environment validation.
 """
-from server.data_generator import FIELD_RANGES
+from .data_generator import FIELD_RANGES
 
 TASK_REGISTRY = [
     {

@@ -6,6 +6,13 @@ These are the ground-truth scorers used by the /grader endpoint
 and reported as episode_score in the final observation.
 """
 
+MIN_SCORE = 0.01
+MAX_SCORE = 0.99
+
+
+def _strict_score(value: float) -> float:
+    return round(min(MAX_SCORE, max(MIN_SCORE, float(value))), 4)
+
 
 def grade_binary_decision(
     agent_decision: str,
@@ -16,7 +23,8 @@ def grade_binary_decision(
     Full credit (1.0) for correct approve/deny, zero otherwise.
     Completely deterministic — no partial credit.
     """
-    return 1.0 if agent_decision.strip().lower() == oracle_decision.strip().lower() else 0.0
+    raw = 1.0 if agent_decision.strip().lower() == oracle_decision.strip().lower() else 0.0
+    return _strict_score(raw)
 
 
 def grade_risk_tiering(
@@ -60,26 +68,18 @@ def grade_risk_tiering(
     else:
         limit_score = 0.0
 
-    final = round(0.6 * tier_score + 0.4 * limit_score, 4)
-    return final
+    final = 0.6 * tier_score + 0.4 * limit_score
+    return _strict_score(final)
 
 
 def grade_adaptive_inquiry(
     agent_decision: str,
     oracle_decision: str,
     n_fields_requested: int,
-    free_requests: int = 3,   # requests before efficiency penalty starts
+    free_requests: int = 3,  
+    action_history: list = None, # requests before efficiency penalty starts
 ) -> float:
-    """
-    Hard task grader.
-    70% weight → correctness (binary)
-    30% weight → efficiency (penalised 0.10 per request beyond free_requests)
-
-    Example:
-        Correct decision, 2 requests → 0.70 + 0.30 = 1.00
-        Correct decision, 5 requests → 0.70 + max(0, 0.30 - 0.20) = 0.80
-        Wrong decision,   2 requests → 0.00 + 0.30 = 0.30
-    """
+   
     correctness = (
         1.0 if agent_decision.strip().lower() == oracle_decision.strip().lower()
         else 0.0
@@ -88,4 +88,12 @@ def grade_adaptive_inquiry(
     over_budget = max(0, n_fields_requested - free_requests)
     efficiency  = max(0.0, 1.0 - 0.10 * over_budget)
 
-    return round(0.7 * correctness + 0.3 * efficiency, 4)
+    repetition_penalty = 0.0
+    if action_history:          
+        unique_actions = len(set(str(a) for a in action_history))
+        total_actions  = len(action_history)
+        if total_actions > 2 and unique_actions / total_actions < 0.5:
+            repetition_penalty = 0.2   # agent is looping same actions
+
+    final = max(0.0, 0.7 * correctness + 0.3 * efficiency - repetition_penalty)
+    return _strict_score(final)

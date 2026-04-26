@@ -21,6 +21,7 @@ Thumbs.db
 
 # Model artifacts (optional if large)
 *.pkl
+!credless_model/model.pkl
 *.joblib
 
 # IDE
@@ -29,3 +30,14 @@ Thumbs.db
 
 # Cache
 .cache/
+# .dockerignore
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.env
+*.egg-info/
+dist/
+build/
+.pytest_cache/
