@@ -104,6 +104,24 @@ Each terminal decision is reviewed by the auditor, and both `auditor_score` and
 `audit_history` are returned in the observation so Agent 2 can learn to be right
 for the right reasons (not just maximize raw reward).
 
+## Applicant Lie Detection (2-Sigma Check)
+
+CredLess now injects explicit income-lie adversarial cases and requires evidence
+verification before terminal decisions.
+
+- High-difficulty episodes can include inflated `stated_income`.
+- The environment compares `stated_income` against transaction-health-inferred
+  income and computes a discrepancy z-score.
+- Discrepancy `> 2 sigma` is treated as a lie candidate.
+- Agent can call `flag_fraud` (income rationale) or `verify_income` to register
+  detection.
+
+Reward wiring:
+
+- `+0.5` for correctly detecting a `>2 sigma` lie before final decision
+- `-0.3` for false positive income-lie flags
+- `-1.0` missed-lie penalty if agent approves without detecting a true `>2 sigma` lie
+
 ## Commands
 
 Train CredLess Agent 1:

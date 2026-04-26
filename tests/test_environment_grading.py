@@ -1,9 +1,100 @@
+import importlib.util
 import unittest
 from unittest.mock import Mock
+import sys
+import types
 
-from models import FinVerseAction
-from server.data_generator import generate_applicant
-from server.environment import CreditAnalystEnvironment
+try:
+    from models import FinVerseAction
+except ModuleNotFoundError as exc:
+    # Test-only compatibility shim: allow unit tests without openenv installed.
+    if exc.name not in {"openenv", "pydantic"}:
+        raise
+
+    pydantic_mod = types.ModuleType("pydantic")
+
+    class _BaseModel:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+        def model_dump(self):
+            return dict(self.__dict__)
+
+    def _Field(*, default=None, default_factory=None, **_kwargs):
+        if default_factory is not None:
+            return default_factory()
+        return default
+
+    pydantic_mod.BaseModel = _BaseModel
+    pydantic_mod.Field = _Field
+    sys.modules["pydantic"] = pydantic_mod
+
+    openenv_mod = types.ModuleType("openenv")
+    core_mod = types.ModuleType("openenv.core")
+    env_server_mod = types.ModuleType("openenv.core.env_server")
+    types_mod = types.ModuleType("openenv.core.env_server.types")
+    interfaces_mod = types.ModuleType("openenv.core.env_server.interfaces")
+    client_types_mod = types.ModuleType("openenv.core.client_types")
+    env_client_mod = types.ModuleType("openenv.core.env_client")
+
+    class _Action:
+        pass
+
+    class _Observation:
+        pass
+
+    class _State:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    class _Environment:
+        pass
+
+    class _StepResult:
+        pass
+
+    class _EnvClient:
+        def __class_getitem__(cls, _item):
+            return cls
+
+    types_mod.Action = _Action
+    types_mod.Observation = _Observation
+    types_mod.State = _State
+    interfaces_mod.Environment = _Environment
+    client_types_mod.StepResult = _StepResult
+    env_client_mod.EnvClient = _EnvClient
+
+    sys.modules["openenv"] = openenv_mod
+    sys.modules["openenv.core"] = core_mod
+    sys.modules["openenv.core.env_server"] = env_server_mod
+    sys.modules["openenv.core.env_server.types"] = types_mod
+    sys.modules["openenv.core.env_server.interfaces"] = interfaces_mod
+    sys.modules["openenv.core.client_types"] = client_types_mod
+    sys.modules["openenv.core.env_client"] = env_client_mod
+
+    from models import FinVerseAction
+_missing_runtime_deps = [
+    dep
+    for dep in ("numpy", "pandas", "sklearn")
+    if importlib.util.find_spec(dep) is None
+]
+_dependency_error = None
+
+try:
+    if _missing_runtime_deps:
+        raise ModuleNotFoundError(f"Missing runtime deps: {', '.join(_missing_runtime_deps)}")
+    from server.data_generator import generate_applicant
+    from server.environment import CreditAnalystEnvironment
+except ModuleNotFoundError as dep_exc:
+    _dependency_error = dep_exc
+
+    def generate_applicant(*_args, **_kwargs):
+        raise RuntimeError(str(_dependency_error))
+
+    class CreditAnalystEnvironment:  # type: ignore[override]
+        pass
 
 
 def build_env() -> CreditAnalystEnvironment:
@@ -37,6 +128,7 @@ def build_env() -> CreditAnalystEnvironment:
     return env
 
 
+@unittest.skipIf(_dependency_error is not None, f"Environment tests skipped: {_dependency_error}")
 class EnvironmentGradingTests(unittest.TestCase):
     def test_deception_level_marks_applicant_metadata(self):
         applicant = generate_applicant(seed=7, difficulty="hard", deception_level=1.0)
@@ -155,6 +247,116 @@ class EnvironmentGradingTests(unittest.TestCase):
         )
         self.assertTrue(observation.done)
         self.assertLess(observation.step_reward, 0.0)
+
+    def test_income_lie_detection_reward_for_gt_2sigma(self):
+        env = build_env()
+        env._applicant.update(
+            {
+                "is_adversarial": True,
+                "fabricated_fields": ["transaction_health"],
+                "withheld_fields": [],
+                "income_verification": {
+                    "stated_income": 120000.0,
+                    "inferred_income": 42000.0,
+                    "sigma_scale": 15000.0,
+                    "discrepancy_sigma": 2.6,
+                    "is_income_lie": True,
+                },
+            }
+        )
+        env._revealed_fields.update(
+            {
+                "stated_income": {"value": 120000.0, "confidence": 0.86},
+                "transaction_health": {"value": 0.25, "confidence": 0.8},
+            }
+        )
+
+        observation = env._handle_verify_income(
+            FinVerseAction(
+                action_type="verify_income",
+                reasoning="Income verification found >2 sigma discrepancy vs transaction behavior.",
+                params={"note": "income mismatch over threshold"},
+            )
+        )
+
+        self.assertGreater(observation.step_reward, 0.45)
+        self.assertTrue(env._income_lie_detected)
+        self.assertTrue(env._last_info["income_lie_detected"])
+
+    def test_income_lie_false_positive_penalty(self):
+        env = build_env()
+        env._applicant.update(
+            {
+                "is_adversarial": False,
+                "fabricated_fields": [],
+                "withheld_fields": [],
+                "income_verification": {
+                    "stated_income": 52000.0,
+                    "inferred_income": 50000.0,
+                    "sigma_scale": 12000.0,
+                    "discrepancy_sigma": 0.17,
+                    "is_income_lie": False,
+                },
+            }
+        )
+        env._revealed_fields.update(
+            {
+                "stated_income": {"value": 52000.0, "confidence": 0.86},
+                "transaction_health": {"value": 0.61, "confidence": 0.85},
+            }
+        )
+
+        observation = env._handle_verify_income(
+            FinVerseAction(
+                action_type="verify_income",
+                reasoning="Suspicious income profile",
+                params={"note": "check income"},
+            )
+        )
+
+        self.assertLess(observation.step_reward, -0.25)
+        self.assertFalse(env._income_lie_detected)
+
+    def test_missed_income_lie_penalty_on_approve(self):
+        env = build_env()
+        env._applicant.update(
+            {
+                "is_adversarial": True,
+                "fabricated_fields": ["transaction_health"],
+                "withheld_fields": [],
+                "income_verification": {
+                    "stated_income": 110000.0,
+                    "inferred_income": 38000.0,
+                    "sigma_scale": 14000.0,
+                    "discrepancy_sigma": 2.4,
+                    "is_income_lie": True,
+                },
+            }
+        )
+        env._revealed_fields.update(
+            {
+                "stated_income": {"value": 110000.0, "confidence": 0.86},
+                "transaction_health": {"value": 0.22, "confidence": 0.81},
+            }
+        )
+        env.oracle.explain_decision = Mock(
+            return_value={
+                "explanation": "approve path",
+                "feature_contributions": [("payment_reliability", -0.11)],
+            }
+        )
+
+        observation = env._handle_terminal(
+            FinVerseAction(
+                action_type="approve",
+                reasoning="Approving based on observed profile.",
+                params={"tier": "low_risk", "rate": 10.0},
+            )
+        )
+
+        self.assertTrue(observation.done)
+        self.assertLess(observation.step_reward, 0.0)
+        self.assertEqual(env._last_info["penalties_applied"]["missed_income_lie"], 1.0)
 
 
 if __name__ == "__main__":

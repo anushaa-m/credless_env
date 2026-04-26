@@ -26,6 +26,11 @@ DUPLICATE_ACTION_PENALTY = 0.10
 NO_PROGRESS_LOOP_PENALTY = 0.15
 FREE_EXTRA_FIELD_REQUESTS = 2
 EXCESS_FIELD_REQUEST_PENALTY = 0.03
+INCOME_LIE_Z_THRESHOLD = 2.0
+INCOME_LIE_DETECTION_REWARD = 0.5
+INCOME_LIE_FALSE_POSITIVE_PENALTY = 0.3
+INCOME_LIE_MISSED_PENALTY = 1.0
+INCOME_VERIFICATION_FIELDS = {"stated_income", "transaction_health"}
 _SHARED_ORACLE: CredLessOracle | None = None
 _SHARED_RISK_PREDICTOR: FrozenRiskPredictor | None = None
 POLICY_REQUIRED_FIELDS = {
@@ -65,6 +70,8 @@ class CreditAnalystEnvironment(Environment):
         self._fraud_flags: List[str] = []
         self._requested_fields: List[str] = []
         self._revealed_fields: Dict[str, Dict[str, Any]] = {}
+        self._income_lie_detected = False
+        self._income_check_ready = False
         self._done = False
         self._last_episode_score = 0.0
         self._last_info: Dict[str, Any] = {}
@@ -162,10 +169,14 @@ class CreditAnalystEnvironment(Environment):
         }
 
     def _applicant_payload(self) -> Dict[str, Any]:
+        declared_income_payload = {}
+        if "stated_income" in self._revealed_fields:
+            declared_income_payload = dict(self._revealed_fields["stated_income"])
         return {
             "applicant_id": self._applicant.get("applicant_id", ""),
             "profile": dict(self._revealed_fields),
-            "missing_fields": [field for field in FIELD_NAMES if field not in self._revealed_fields],
+            "declared_income": declared_income_payload,
+            "missing_fields": [field for field in list(FIELD_NAMES) + ["stated_income"] if field not in self._revealed_fields],
             "declared_quality": self._applicant.get("data_quality", "observed_with_noise"),
             "source": self._applicant.get("source", "dataset_sample"),
         }
@@ -228,10 +239,34 @@ class CreditAnalystEnvironment(Environment):
         )
 
     def _reveal_field(self, field: str, source: str) -> None:
+        if field == "stated_income":
+            income_verification = dict(self._applicant.get("income_verification", {}))
+            stated_income = float(income_verification.get("stated_income", 0.0))
+            self._revealed_fields[field] = {
+                "value": round(stated_income, 2),
+                "confidence": 0.86,
+                "source": source,
+            }
+            return
         self._revealed_fields[field] = {
             "value": round(float(self._applicant["presented_features"][field]), 6),
             "confidence": round(float(self._applicant["field_confidence"][field]), 3),
             "source": source,
+        }
+
+    def _income_discrepancy(self) -> Dict[str, float | bool]:
+        if any(field not in self._revealed_fields for field in INCOME_VERIFICATION_FIELDS):
+            return {"check_ready": False, "discrepancy_sigma": 0.0, "is_lie": False}
+        income_verification = dict(self._applicant.get("income_verification", {}))
+        try:
+            discrepancy_sigma = float(income_verification.get("discrepancy_sigma", 0.0))
+        except (TypeError, ValueError):
+            discrepancy_sigma = 0.0
+        is_lie = discrepancy_sigma > INCOME_LIE_Z_THRESHOLD
+        return {
+            "check_ready": True,
+            "discrepancy_sigma": round(discrepancy_sigma, 4),
+            "is_lie": bool(is_lie),
         }
 
     def _set_last_info(
@@ -446,6 +481,8 @@ class CreditAnalystEnvironment(Environment):
         self._fraud_flags = []
         self._requested_fields = []
         self._revealed_fields = {}
+        self._income_lie_detected = False
+        self._income_check_ready = False
         self.trajectory = []
 
         for field in self._applicant.get("visible_fields", []):
@@ -532,6 +569,8 @@ class CreditAnalystEnvironment(Environment):
             return FinVerseAction(action_type=normalized, params={}, reasoning="")
         if normalized == "flag_fraud":
             return FinVerseAction(action_type="flag_fraud", params={}, reasoning="")
+        if normalized == "verify_income":
+            return FinVerseAction(action_type="verify_income", params={}, reasoning="")
         raise ValueError(f"Unsupported action '{raw}'.")
 
     def _oracle_score_for_decision(self, decision: str) -> float:
@@ -546,7 +585,7 @@ class CreditAnalystEnvironment(Environment):
         field = str(action.params.get("field", "")).strip()
         if not field:
             return self._invalid("request_info requires params.field.")
-        if field not in FIELD_NAMES:
+        if field not in FIELD_NAMES and field != "stated_income":
             return self._invalid(f"Unknown applicant field '{field}'.")
         if field in self._revealed_fields:
             return self._invalid(f"Field '{field}' is already visible.", penalty=0.10)
@@ -585,6 +624,10 @@ class CreditAnalystEnvironment(Environment):
             excess_data_request=-over_collection_penalty,
         )
         self._mark_last_action_progress(True)
+        income_check = self._income_discrepancy()
+        self._income_check_ready = bool(income_check.get("check_ready", False))
+        if self._income_check_ready:
+            self._last_info["income_discrepancy_sigma"] = float(income_check.get("discrepancy_sigma", 0.0))
         return self._build_observation(
             step_reward=reward,
             message=f"Revealed '{field}' from applicant response.",
@@ -630,9 +673,30 @@ class CreditAnalystEnvironment(Environment):
 
         self._fraud_flags.append(reason)
         self._append_conversation("assistant", f"Fraud flag raised: {reason}")
+        income_check = self._income_discrepancy()
+        self._income_check_ready = bool(income_check.get("check_ready", False))
         is_deceptive = bool(self._applicant.get("is_adversarial", False))
         signal_match = self._fraud_reason_matches_applicant(reason)
-        if is_deceptive and signal_match:
+        income_focus = "income" in reason.lower() or "transaction" in reason.lower()
+        if self._income_check_ready and income_focus:
+            if bool(income_check.get("is_lie", False)):
+                self._income_lie_detected = True
+                reward = INCOME_LIE_DETECTION_REWARD - STEP_PENALTY
+                message = "Income lie detected (>2 sigma discrepancy) and flagged."
+                penalties = {"income_lie_detection": INCOME_LIE_DETECTION_REWARD, "efficiency": STEP_PENALTY}
+                reward_components = {
+                    "income_lie_detection": INCOME_LIE_DETECTION_REWARD,
+                    "efficiency": -STEP_PENALTY,
+                }
+            else:
+                reward = -(INCOME_LIE_FALSE_POSITIVE_PENALTY + STEP_PENALTY)
+                message = "Income fraud flag was a false positive (<=2 sigma discrepancy)."
+                penalties = {"income_false_positive": INCOME_LIE_FALSE_POSITIVE_PENALTY, "efficiency": STEP_PENALTY}
+                reward_components = {
+                    "income_false_positive": -INCOME_LIE_FALSE_POSITIVE_PENALTY,
+                    "efficiency": -STEP_PENALTY,
+                }
+        elif is_deceptive and signal_match:
             reward = VALID_DECEPTION_FLAG_REWARD - STEP_PENALTY
             message = "Fraud flag matched applicant inconsistency."
             penalties = {"deception_detection": VALID_DECEPTION_FLAG_REWARD, "efficiency": STEP_PENALTY}
@@ -664,12 +728,23 @@ class CreditAnalystEnvironment(Environment):
             penalties,
         )
         self._last_info["fraud_signal_match"] = bool(signal_match)
+        self._last_info["income_discrepancy_sigma"] = float(income_check.get("discrepancy_sigma", 0.0))
+        self._last_info["income_lie_detected"] = bool(self._income_lie_detected)
         self._record_reward_components(**reward_components)
         self._mark_last_action_progress(True)
         return self._build_observation(
             step_reward=reward,
             message=message,
         )
+
+    def _handle_verify_income(self, action: FinVerseAction) -> FinVerseObservation:
+        note = str(action.params.get("note", "") or action.reasoning or "income verification check").strip()
+        verification_action = FinVerseAction(
+            action_type="flag_fraud",
+            params={"reason": f"income verification: {note}"},
+            reasoning=note,
+        )
+        return self._handle_flag_fraud(verification_action)
 
     def _fraud_reason_matches_applicant(self, reason: str) -> bool:
         if not self._applicant.get("is_adversarial", False):
@@ -743,6 +818,15 @@ class CreditAnalystEnvironment(Environment):
             applicant_is_fraudulent=bool(self._applicant.get("is_adversarial", False)),
         )
         reward = max(-1.5, min(1.5, float(evaluation["reward"])))
+        income_check = self._income_discrepancy()
+        self._income_check_ready = bool(income_check.get("check_ready", False))
+        if (
+            action.action_type in {"approve", "conditional_approve"}
+            and self._income_check_ready
+            and bool(income_check.get("is_lie", False))
+            and not self._income_lie_detected
+        ):
+            reward -= INCOME_LIE_MISSED_PENALTY
         risk = float(self._ground_truth.get("default_prob", 0.5))
         self.completed_episode_count += 1
         self.running_risk_sum += risk
@@ -774,6 +858,14 @@ class CreditAnalystEnvironment(Environment):
                 "oracle_alignment": auditor_result.get("oracle_alignment", 0.0),
                 "reasoning_score": auditor_result.get("reasoning_score", 0.0),
                 "bias_penalty": auditor_result.get("bias_penalty", 0.0),
+                "missed_income_lie": INCOME_LIE_MISSED_PENALTY
+                if (
+                    action.action_type in {"approve", "conditional_approve"}
+                    and self._income_check_ready
+                    and bool(income_check.get("is_lie", False))
+                    and not self._income_lie_detected
+                )
+                else 0.0,
             },
             oracle_decision=oracle_decision,
             oracle_confidence=confidence,
@@ -788,6 +880,8 @@ class CreditAnalystEnvironment(Environment):
             self._ground_truth.get("decision"),
         )
         self._last_info["conditional_candidate"] = bool(self._ground_truth.get("conditional_candidate", False))
+        self._last_info["income_discrepancy_sigma"] = float(income_check.get("discrepancy_sigma", 0.0))
+        self._last_info["income_lie_detected"] = bool(self._income_lie_detected)
         self._last_info["auditor_report"] = dict(audit_report)
         self._last_info["auditor_score"] = round(float(self._latest_auditor_score), 4)
         self._record_reward_components(
@@ -798,6 +892,14 @@ class CreditAnalystEnvironment(Environment):
             oracle_alignment=auditor_result.get("oracle_alignment", 0.0),
             reasoning_score=auditor_result.get("reasoning_score", 0.0),
             bias_penalty=-auditor_result.get("bias_penalty", 0.0),
+            missed_income_lie=-INCOME_LIE_MISSED_PENALTY
+            if (
+                action.action_type in {"approve", "conditional_approve"}
+                and self._income_check_ready
+                and bool(income_check.get("is_lie", False))
+                and not self._income_lie_detected
+            )
+            else 0.0,
         )
         self._mark_last_action_progress(True)
         return self._build_observation(
@@ -829,6 +931,8 @@ class CreditAnalystEnvironment(Environment):
             observation = self._handle_query_market()
         elif parsed_action.action_type == "flag_fraud":
             observation = self._handle_flag_fraud(parsed_action)
+        elif parsed_action.action_type == "verify_income":
+            observation = self._handle_verify_income(parsed_action)
         elif parsed_action.action_type in {"approve", "conditional_approve", "deny", "escalate"}:
             observation = self._handle_terminal(parsed_action)
         else:
