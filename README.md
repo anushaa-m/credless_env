@@ -1,163 +1,306 @@
-# CredLess Two-Agent Stack
+# CredLess 🧠💳
 
-This repo exposes one unified CredLess stack:
+**Behavioral RL for Fair Credit Decision-Making**
 
-- train CredLess Agent 1 oracle model in `credless_model/`
-- run two-agent inference with Agent 1 + Agent 2
-- serve OpenEnv-compatible multi-step investigation environment
-- score terminal decisions with shared oracle and grader logic
+> *An open reinforcement learning environment that learns trust from behavior — not just documents.*
 
-At the environment level, each episode is a 5-8 step lending investigation over
-20 engineered real-world features with market context, applicant/action
-history, and adversarial behavior such as fabricated or withheld fields.
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://python.org)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![Environment](https://img.shields.io/badge/Env-OpenEnv-orange)](https://anushaa-m-credless-env.hf.space)
+[![Blog](https://img.shields.io/badge/Blog-Hugging%20Face-yellow)](https://huggingface.co)
 
-## Current Structure
+---
 
-```text
-credless_env/
-|-- credless_model/
-|-- data/
-|-- env/
-|-- models/
-|   `-- __init__.py
-|-- pipeline/
-|   |-- main_pipeline.py
-|   |-- oracle.py
-|   `-- reasoning.py
-|-- server/
-|-- inference.py
-|-- train.py
-`-- pyproject.toml
+## What Is CredLess?
+
+CredLess is an **open RL training and evaluation environment** for credit decision-making that works with alternative behavioral signals instead of — or in addition to — traditional credit scores.
+
+It trains an agent to behave like a thoughtful credit analyst: gathering evidence step-by-step, weighing behavioral signals under uncertainty, detecting fraud, and making decisions that are audited for bias and reasoning quality.
+
+The system is designed around one core question:
+
+> *Can we measure financial trust differently — and more fairly?*
+
+---
+
+## Hackathon Theme Alignment
+
+### 🎯 AI for Financial Inclusion
+Traditional credit infrastructure excludes hundreds of millions of people globally — not because they're untrustworthy, but because they're **undocumented**. CredLess directly addresses this by:
+- Operating on **alternative behavioral signals** (payment reliability, income capacity, employment stability, overdraft patterns) that don't require formal credit history
+- Rewarding agents that make correct decisions for **underbanked applicants** using non-standard evidence
+- Building explainability into every decision via SHAP + an auditor agent
+
+### 🤖 Reinforcement Learning for Real-World Decision-Making
+CredLess is not a classification model. It's a **sequential decision process** modeled as an RL environment where:
+- The agent operates under **partial observability** (not all applicant fields are visible at step 0)
+- Actions have consequences: each information request costs a step penalty
+- The reward function combines accuracy, reasoning quality, fraud detection, and efficiency
+- Policy optimization runs via **GRPO** (Unsloth + TRL) with a lightweight **PPO** fallback
+
+### 🛡️ Responsible AI / Fairness
+The environment has **bias detection baked into the reward signal**, not bolted on afterward:
+- An `AuditorAgent` reviews every terminal decision
+- Any reasoning that mentions protected attributes (caste, religion, gender, ethnicity, marital status, race) reduces the auditor score by 0.5 — a hard penalty
+- Fraud flags are validated against ground truth to prevent false accusations
+
+---
+
+## Environment Design
+
+### Architecture
+
+```
+CredLess-Env (OpenEnv Server)
+│
+├── /reset  →  Initializes episode with partial applicant profile
+├── /step   →  Accepts action JSON, returns observation + reward + done
+│
+├── CreditAnalystEnvironment
+│   ├── Oracle          (ground truth default probability + decision)
+│   ├── AuditorAgent    (reasoning quality + bias detection)
+│   ├── RiskPredictor   (SHAP-powered live risk score)
+│   └── DataGenerator   (synthetic applicant profiles with adversarial variants)
+│
+└── Tasks
+    ├── binary_decision
+    ├── risk_tiering
+    └── adaptive_inquiry
 ```
 
-## What Is Implemented
+### Action Space
 
-- `credless_model/train.py` owns Agent 1 training and artifact generation.
-- `pipeline/main_pipeline.py` loads only CredLess Agent 1 artifact from `credless_model/model.pkl`.
-- Root `train.py` delegates directly to CredLess trainer.
-- Root `inference.py` runs two-agent CredLess evaluation against `CreditAnalystEnvironment`.
-- `server/` owns live OpenEnv environment, oracle, and grading path.
+| Action | Description | Reward Effect |
+|---|---|---|
+| `request_info` | Reveal a hidden applicant field | +0.05 − step cost |
+| `query_market` | Reveal current market conditions | +0.05 − step cost |
+| `flag_fraud` | Raise a fraud flag with a reason | +0.05–0.50 or −0.10–0.30 depending on accuracy |
+| `verify_income` | Trigger income discrepancy check | Routes to `flag_fraud` with income context |
+| `approve` | Terminal: approve the application | Oracle-aligned reward |
+| `conditional_approve` | Terminal: approve with rate + amount cap | Reward adjusted for term quality |
+| `deny` | Terminal: reject the application | Oracle-aligned reward |
+| `escalate` | Terminal: escalate for human review | Fixed partial reward (−0.5) |
 
-## Dynamic Risk-Based Oracle
+### Observation Space
 
-CredLess uses a macro-prudential risk layer instead of a fixed decision boundary.
-The ground-truth oracle now mutates the default-risk threshold using the hidden
-market state:
+Each step returns a `FinVerseObservation` containing:
+- `applicant` — visible profile fields, missing fields, declared income, credit trajectory
+- `market_state` — base lending rate, default risk index, sector outlook (if queried)
+- `current_policy` — required fields and max DTI for this episode
+- `fraud_flags_raised` — list of flags submitted so far
+- `portfolio_context` — session-level approve rate and avg risk (anti-gaming signal)
+- `compliance_history` — recent auditor scores
+- `step`, `max_steps`, `cumulative_reward` — episode progress signals
 
-```text
-dynamic_default_threshold = base_threshold / market_risk_index
+### Reward Function
+
+```
+episode_reward = 
+    0.65 × task_score             # oracle alignment + tier match
+  + 0.35 × auditor_score          # reasoning quality + bias check
+  − efficiency_penalty            # excess field requests + skipped market query
+  + fraud_bonus                   # correct fraud detection on adversarial applicants
+  − false_alarm_penalty           # fraud flags on clean applicants
+  − missed_income_lie_penalty     # income discrepancy not caught before approval
+  − repeat_action_penalty         # anti-hacking: duplicate actions penalized
+  − timeout_penalty               # no terminal decision within MAX_STEPS=8
 ```
 
-This keeps the decision semantics correct for default probability: a higher
-market risk index lowers the acceptable default-risk cutoff and makes approvals
-more conservative. A lower index relaxes the cutoff during favorable markets.
+---
 
-| Market State | Risk Index | Effective Threshold | Analyst Stance |
-| --- | ---: | ---: | --- |
-| Economic Boom | 0.92 | ~0.40 | Aggressive: higher approval tolerance |
-| Stable Credit | 1.00 | ~0.37 | Neutral baseline |
-| Recession | 1.18 | ~0.31 | Conservative: lower default-risk tolerance |
+## Three Tasks
 
-The agent should query market conditions before a terminal approval or denial.
-The same applicant can be approved in a boom and denied in a recession because
-the oracle threshold changes with the hidden macro state.
+### `binary_decision` (Easy)
+The agent must approve or deny. Required fields: `payment_reliability`, `debt_burden_score`. Baseline task for establishing decision accuracy.
 
-`inference.py` logs `market_state`, `market_risk_index`, `base_threshold`, and
-`dynamic_threshold` for every episode so before/after market-aware behavior can
-be compared directly.
+### `risk_tiering` (Medium)
+The agent must classify the applicant into a risk tier (low / medium / high) and optionally offer a `conditional_approve` with an interest rate and loan cap. Required fields expand to include `overdraft_risk`.
 
-## Reward-Hacking Protection: Threshold Persistence
+### `adaptive_inquiry` (Hard)
+Full complexity. The agent faces adversarial applicants who fabricate income or withhold delinquency history. Required fields include `total_delinquency_score`. Income verification via 2-sigma discrepancy detection is available. The agent must detect lies before approving — or pay a 1.0 penalty for missing them.
 
-The standalone training entrypoint now guarantees `risk_thresholds` are saved in
-`credless_model/model.pkl` (`low_risk`, `medium_risk`) using trained values. This
-prevents server-oracle fallback defaults (`0.40`, `0.70`) and keeps tiered
-decisions aligned with training-time calibration, improving observable inference
-metrics such as reject recall and ROC-AUC.
+---
 
-## New Terminal Action: `conditional_approve`
+## Behavioral Signals Used
 
-CredLess now supports nuanced terminal decisions:
+These are the alternative features CredLess operates on — none require a traditional credit file:
 
-- `approve` for clear low-risk approvals
-- `conditional_approve` for medium-risk ("yellow-zone") applicants with terms
-- `deny` for high-risk applicants
+| Signal | Meaning |
+|---|---|
+| `payment_reliability` | On-time payment consistency |
+| `income_capacity_score` | Earning capacity derived from transaction patterns |
+| `employment_stability` | Job tenure and sector consistency |
+| `overdraft_risk` | Frequency and magnitude of overdrafts |
+| `total_delinquency_score` | Composite delinquency metric |
+| `debt_burden_score` | Total obligations vs. capacity |
+| `account_maturity` | Depth and age of banking relationship |
+| `medical_stress_score` | Health-related financial shocks |
+| `stated_income` + `transaction_health` | Cross-verified income (fraud signal) |
 
-`conditional_approve` accepts:
+---
 
-```json
-{
-  "action_type": "conditional_approve",
-  "params": { "rate": 14.5, "max_amount": 50000 },
-  "reasoning": "Approved with elevated rate given overdraft_risk"
-}
+## Training Setup
+
+### GRPO (Primary, via Unsloth + TRL)
+
+Used when GPU + TRL backend is available. The LLM (default: `Qwen/Qwen2.5-0.5B-Instruct`) is fine-tuned in 4-bit precision. A custom `reward_fn` scores completions by matching agent decisions against oracle-preferred actions weighted by trajectory reward.
+
+```python
+from rl.trainer import RLTrainer, RLTrainingConfig
+
+config = RLTrainingConfig(
+    algorithm="grpo",
+    episodes=256,
+    batch_size=32,
+    base_model_name="Qwen/Qwen2.5-0.5B-Instruct",
+    learning_rate=1e-5,
+)
+trainer = RLTrainer(config=config)
+summary = trainer.train(users)
 ```
 
-Reward shaping is anti-hacking by design: medium-risk conditional approvals score
-better than a wrong hard decision, while misuse on clear low/high-risk profiles
-is penalized.
+### PPO (Lightweight Fallback)
 
-## Auditor Agent Oversight
+A pure NumPy PPO implementation with GAE, clipped surrogate objective, entropy regularization, and value function training. Runs on CPU with no dependencies beyond NumPy. Weights saved as `.npz`.
 
-CredLess now runs a dedicated `AuditorAgent` that wraps deterministic
-`audit_terminal_action()` logic and performs explicit bias checks on reasoning.
-Each terminal decision is reviewed by the auditor, and both `auditor_score` and
-`audit_history` are returned in the observation so Agent 2 can learn to be right
-for the right reasons (not just maximize raw reward).
+```bash
+# Train
+python env/env_runner.py --mode ppo-train --episodes 50 --task adaptive_inquiry
 
-## Applicant Lie Detection (2-Sigma Check)
-
-CredLess now injects explicit income-lie adversarial cases and requires evidence
-verification before terminal decisions.
-
-- High-difficulty episodes can include inflated `stated_income`.
-- The environment compares `stated_income` against transaction-health-inferred
-  income and computes a discrepancy z-score.
-- Discrepancy `> 2 sigma` is treated as a lie candidate.
-- Agent can call `flag_fraud` (income rationale) or `verify_income` to register
-  detection.
-
-Reward wiring:
-
-- `+0.5` for correctly detecting a `>2 sigma` lie before final decision
-- `-0.3` for false positive income-lie flags
-- `-1.0` missed-lie penalty if agent approves without detecting a true `>2 sigma` lie
-
-## Delinquency time-decay (recency vs FICO-style static counts)
-
-FinVerse down-weights **stale** delinquency and overdraft signals using
-`bank_account_age_months` as a temporal proxy: recent problems keep more of
-their impact; old events on a mature account are discounted before the oracle
-runs `predict_proba`. Each applicant carries a `credit_trajectory` summary
-(also requestable via `request_info`: `last_delinquency_months_ago`,
-`bank_account_age_months`, `overdraft_count`). **Pitch:** unlike a static
-bureau snapshot, recency weighting rewards recovery and long clean runs.
-
-The `AuditorAgent` awards a small reasoning bonus when the rationale explicitly
-references recency, stability, or historical vs recent behavior.
-
-## Commands
-
-Train CredLess Agent 1:
-
-```powershell
-.\venv\Scripts\python.exe train.py
+# Evaluate
+python env/env_runner.py --mode ppo-eval --episodes 20 --weights saved/ppo_policy.npz
 ```
 
-Run local two-agent inference:
+### Dynamic Approve Rate Control
 
-```powershell
-.\venv\Scripts\python.exe inference.py --n-rows 20
+If the batch approve rate exceeds 65%, a dynamic penalty scales up proportionally and is subtracted from rewards of approved decisions in that batch. This prevents the agent from gaming the reward by rubber-stamping all applications.
+
+```python
+if approve_rate > 0.65:
+    penalty = (approve_rate - 0.65) * 0.5
+    for t in trajectories:
+        if t.summary["decision"] == "APPROVE":
+            t.total_reward -= penalty
 ```
 
-Installed script entrypoints after package install:
+---
 
-```powershell
-credless-train
-credless-infer --n-rows 20
+## Metrics to Track
+
+During training, log and plot:
+
+| Metric | What It Shows |
+|---|---|
+| Mean episode reward | Overall decision quality |
+| Approve rate per batch | Policy balance — not over-approving |
+| Oracle alignment | Accuracy vs. ground truth |
+| Auditor score | Reasoning and bias quality |
+| Policy entropy | Exploration vs. exploitation tradeoff |
+| Policy loss | PPO/GRPO optimization signal |
+
+<!-- INSERT: Reward curve across episodes -->
+<!-- INSERT: Approve rate stability plot -->
+<!-- INSERT: Entropy decay curve -->
+
+---
+
+## Quickstart
+
+```bash
+git clone https://github.com/your-username/credless
+cd credless
+pip install -r requirements.txt
+
+# Set environment variables
+cp .env.example .env
+# Add HF_TOKEN and ENV_BASE_URL
+
+# Run a single rollout
+python env/env_runner.py --mode rollout --task binary_decision
+
+# RL training loop
+python rl/trainer.py --algorithm grpo --episodes 256 --batch-size 32
+
+# Lightweight PPO (no GPU needed)
+python env/env_runner.py --mode ppo-train --episodes 30
 ```
 
-## Notes
+**Live environment:** `https://anushaa-m-credless-env.hf.space`
 
-- `credless_model/model.pkl` remains single source for Agent 1 inference.
-- `inference.py` evaluates environment episodes, not separate supervised artifact files.
-- Root CLI no longer writes `models/saved/*`.
+---
+
+## Production Roadmap
+
+### Phase 1 — Data Integration
+- UPI / PhonePe / BHIM transaction streams → `payment_reliability` proxy
+- GST filing consistency → `income_capacity_score`
+- Telco and utility payment data for completely unbanked users
+- DigiLocker document signals for identity anchoring
+
+### Phase 2 — Deployment
+- FastAPI wrapper around CredLess-Env for production inference
+- Target: < 200ms per decision step (4-bit quantized LLM via Unsloth)
+- JSON API: decision + risk score + SHAP explanation per request
+- Docker image with health checks and horizontal scaling support
+
+### Phase 3 — Trust & Monitoring
+- SHAP explanations surfaced to loan officers in plain language
+- Full audit logs per episode: reward components, oracle alignment, bias flags
+- Human escalation path via the built-in `escalate` action
+- Scheduled bias audits across demographic cohorts
+- Drift detection on approve rate and signal distribution
+
+### Phase 4 — Scale
+- NBFC / fintech API integration as a drop-in alternative scoring layer
+- Regional model variants (state-level income norms, sector risk indices)
+- Federated fine-tuning support for institution-specific lending policy
+- Regulator-ready audit trail export (RBI / SEBI compliance format)
+
+---
+
+## Repository Structure
+
+```
+credless/
+├── env/
+│   └── env_runner.py          # PPO trainer + rollout runner + LLM policy
+├── rl/
+│   ├── trainer.py             # GRPO/PPO training loop
+│   ├── rollout_collector.py   # Trajectory collection + policy update
+│   └── reward_logger.py       # JSONL reward logging
+├── server/
+│   ├── environment.py         # CreditAnalystEnvironment (OpenEnv)
+│   ├── graders.py             # AuditorAgent + reward evaluation
+│   ├── oracle.py              # Ground truth oracle
+│   ├── tasks.py               # Task definitions + difficulty
+│   └── data_generator.py      # Synthetic applicant generation
+├── pipeline/
+│   └── main_pipeline.py       # CreditDecisionPipeline + FrozenRiskPredictor
+├── data/
+│   └── synthetic_generator.py
+├── models.py                  # FinVerseAction / Observation / State schemas
+├── credless.md                # Hugging Face blog post
+└── README.md
+```
+
+---
+
+## Why This Matters
+
+Over 190 million adults in India alone are unbanked or underbanked. Most of them aren't credit risks — they're credit **invisibles**. They have behavioral track records of reliability, consistency, and trustworthiness that traditional systems have no vocabulary for.
+
+CredLess doesn't lower the bar. It moves the bar to where it should have been.
+
+A system that can see payment consistency, income trajectory, and employment stability — without requiring a CIBIL score — can reach the people who need credit access most: the home kitchen entrepreneur, the seasonal worker, the first-generation saver.
+
+> **Fairness isn't about equal rules. It's about being seen — not just scored.**
+
+---
+
+## License
+
+MIT — use it, extend it, improve it.
+
+---
+
+*Contributions welcome. If you're working on financial inclusion, alternative data, or RL for high-stakes decisions — let's talk.*
