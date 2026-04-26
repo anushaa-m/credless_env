@@ -195,6 +195,16 @@ def _invalid_step_response(active_env: CreditAnalystEnvironment, error: Exceptio
     )
 
 
+@app.get("/")
+def home():
+    return {
+        "status": "Space running",
+        "service": "CredLess-Env",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "healthy", "oracle_loaded": oracle is not None, "session_store": str(SESSION_DIR)}
