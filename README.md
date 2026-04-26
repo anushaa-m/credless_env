@@ -207,7 +207,7 @@ During training, log and plot:
 ## Quickstart
 
 ```bash
-git clone https://github.com/your-username/credless
+git clone https://github.com/anushaa-m/credless_env
 cd credless
 pip install -r requirements.txt
 
@@ -225,7 +225,7 @@ python rl/trainer.py --algorithm grpo --episodes 256 --batch-size 32
 python env/env_runner.py --mode ppo-train --episodes 30
 ```
 
-**Live environment:** `https://anushaa-m-credless-env.hf.space`
+**Live environment:** `https://huggingface.co/spaces/anushaa-m/credless-env`
 
 ---
 
@@ -294,12 +294,6 @@ CredLess doesn't lower the bar. It moves the bar to where it should have been.
 A system that can see payment consistency, income trajectory, and employment stability — without requiring a CIBIL score — can reach the people who need credit access most: the home kitchen entrepreneur, the seasonal worker, the first-generation saver.
 
 > **Fairness isn't about equal rules. It's about being seen — not just scored.**
-
----
-
-## License
-
-MIT — use it, extend it, improve it.
 
 ---
 
