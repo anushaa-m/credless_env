@@ -83,7 +83,11 @@ class OracleThresholdTests(unittest.TestCase):
 
         self.assertEqual(result["decision"], "approve")
         self.assertEqual(result["tier"], "medium_risk")
-        self.assertEqual(result["thresholds"], {"low_risk": 0.2192, "medium_risk": 0.3654})
+        th = result["thresholds"]
+        self.assertEqual(th["low_risk"], 0.2192)
+        self.assertEqual(th["medium_risk"], 0.3654)
+        self.assertEqual(th["base_low_risk"], 0.2192)
+        self.assertEqual(th["base_medium_risk"], 0.3654)
 
 
 if __name__ == "__main__":

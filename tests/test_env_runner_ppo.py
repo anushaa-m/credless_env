@@ -1,19 +1,28 @@
+from __future__ import annotations
+
+import importlib.util
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import numpy as np
-
-from env.env_runner import (
-    DISCRETE_ACTIONS,
-    FEATURE_DIM,
-    PPORolloutBuffer,
-    PPOPolicy,
-    RolloutStep,
-    action_mask,
-    discrete_to_env_action,
-    observation_to_vector,
+_SKIP = (
+    importlib.util.find_spec("torch") is None
+    or importlib.util.find_spec("numpy") is None
 )
+
+if not _SKIP:
+    import numpy as np
+
+    from env.env_runner import (
+        DISCRETE_ACTIONS,
+        FEATURE_DIM,
+        PPORolloutBuffer,
+        PPOPolicy,
+        RolloutStep,
+        action_mask,
+        discrete_to_env_action,
+        observation_to_vector,
+    )
 
 
 def sample_observation():
@@ -37,6 +46,7 @@ def sample_observation():
     }
 
 
+@unittest.skipIf(_SKIP, "torch and numpy required for PPO env runner tests")
 class EnvRunnerPpoTests(unittest.TestCase):
     def test_observation_vector_shape(self):
         vector = observation_to_vector(sample_observation())

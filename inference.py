@@ -65,7 +65,12 @@ def _local_oracle_payload(env: CreditAnalystEnvironment) -> dict[str, Any]:
     merged = {field: 0.5 for field in getattr(env.oracle, "feature_order", [])}
     merged.update(revealed)
     market_state = dict(env._market_state)  # type: ignore[attr-defined]
-    oracle_result = env.oracle.predict(merged, market_condition=market_state["name"])
+    traj = dict(env._applicant.get("credit_trajectory", {}) or {}) if getattr(env, "_applicant", None) else {}
+    oracle_result = env.oracle.predict(
+        merged,
+        market_condition=market_state["name"],
+        trajectory=traj or None,
+    )
     oracle_risk = float(oracle_result.get("default_prob", 0.0))
     oracle_confidence = float(max(oracle_risk, 1.0 - oracle_risk))
     thresholds = dict(oracle_result.get("thresholds", {}))

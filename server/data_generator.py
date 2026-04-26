@@ -16,6 +16,8 @@ import numpy as np
 
 from credless_model.dataset_pipeline import FEATURE_NAMES, load_dataset_cache
 
+from .credit_recency import apply_delinquency_recency, compute_credit_trajectory
+
 FIELD_NAMES: List[str] = list(FEATURE_NAMES)
 DEFAULT_VISIBLE_FIELDS = [
     "payment_reliability",
@@ -44,6 +46,14 @@ WITHHOLD_TARGETS = [
 ]
 CONFIDENCE_SENSITIVE_FIELDS = set(ADVERSARIAL_TARGETS + WITHHOLD_TARGETS)
 INCOME_LIE_Z_THRESHOLD = 2.0
+
+
+def _dataset_features():
+    return load_dataset_cache()["features"]
+
+
+def _dataset_cleaned():
+    return load_dataset_cache()["cleaned"]
 
 
 def _income_reference_stats() -> Dict[str, float]:
@@ -108,14 +118,6 @@ class ApplicantAgent:
             confidence[field] = round(float(rng.uniform(0.30, 0.62 - 0.15 * level)), 3)
 
         return presented, confidence, fabricated_fields, withheld_fields
-
-
-def _dataset_features():
-    return load_dataset_cache()["features"]
-
-
-def _dataset_cleaned():
-    return load_dataset_cache()["cleaned"]
 
 
 def _build_field_ranges() -> Dict[str, tuple]:
@@ -197,6 +199,12 @@ def _apply_applicant_behavior(
         rng=rng,
     )
 
+    credit_trajectory = compute_credit_trajectory(raw_row, rng)
+    try:
+        presented = apply_delinquency_recency(presented, credit_trajectory)
+    except Exception:
+        pass
+
     tx_health = float(presented.get("transaction_health", true_features.get("transaction_health", 0.5)))
     inferred_income = _infer_income_from_transaction_health(tx_health)
     sigma_scale = max(1200.0, 0.22 * inferred_income)
@@ -227,6 +235,7 @@ def _apply_applicant_behavior(
             "discrepancy_sigma": round(discrepancy_sigma, 4),
             "is_income_lie": bool(income_lie),
         },
+        "credit_trajectory": dict(credit_trajectory),
     }
 
 
@@ -290,4 +299,5 @@ def generate_applicant(
         "raw_row": raw_row,
         "source": "dataset_sample",
         "income_verification": dict(behavior.get("income_verification", {})),
+        "credit_trajectory": dict(behavior.get("credit_trajectory", {})),
     }

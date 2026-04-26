@@ -84,6 +84,26 @@ def audit_terminal_action(
     fraud_score = 1.0 if (not fraud_flags or _contains_any_reasoning_term(reasoning, ["fraud", "confidence", "inconsistent", "verification"])) else 0.55
     reasoning_score = 0.20 if len(reasoning) < 30 else min(1.0, 0.35 + evidence_score * 0.35 + market_score * 0.15 + fraud_score * 0.15)
 
+    recency_bonus = 0.0
+    if _contains_any_reasoning_term(
+        reasoning,
+        [
+            "recency",
+            "recent",
+            "historical",
+            "months ago",
+            "old delinquency",
+            "stability",
+            "recovery",
+            "clean record",
+            "time-decay",
+            "account age",
+            "long ago",
+        ],
+    ):
+        recency_bonus = 0.2
+    reasoning_score = min(1.0, reasoning_score + recency_bonus)
+
     conditional_reasoning_score = 1.0
     if action_type == "conditional_approve":
         top_factors = [str(item[0]).lower() for item in (final_action.get("top_factors") or []) if isinstance(item, (list, tuple)) and item]
@@ -105,6 +125,7 @@ def audit_terminal_action(
         "score": round(total, 4),
         "oracle_alignment": round(oracle_alignment, 4),
         "reasoning_score": round(reasoning_score, 4),
+        "recency_reasoning_bonus": round(recency_bonus, 4),
         "conditional_reasoning_score": round(float(conditional_reasoning_score), 4),
         "bias_penalty": round(bias_penalty, 4),
         "message": "Audit complete: decision evaluated for alignment, evidence quality, and bias risk.",
@@ -155,15 +176,26 @@ def evaluate_terminal_action(
         market_penalty = 0.05 if not queried_market else 0.0
         fraud_bonus = 0.15 if fraud_flags and applicant_is_fraudulent else 0.0
         false_alarm_penalty = 0.10 if fraud_flags and not applicant_is_fraudulent else 0.0
+        high_risk_misalignment = 0.55 if oracle_tier == "high_risk" else 0.0
 
         episode_score = strict_score(0.65 * task_score + 0.35 * auditor_score)
-        reward = round(episode_score - request_penalty - market_penalty + fraud_bonus - false_alarm_penalty, 4)
+        reward = round(
+            episode_score
+            - request_penalty
+            - market_penalty
+            - high_risk_misalignment
+            + fraud_bonus
+            - false_alarm_penalty,
+            4,
+        )
         return {
             "task_score": round(task_score, 4),
             "auditor_score": round(auditor_score, 4),
             "episode_score": episode_score,
             "reward": reward,
-            "efficiency_penalty": round(request_penalty + market_penalty + false_alarm_penalty, 4),
+            "efficiency_penalty": round(
+                request_penalty + market_penalty + false_alarm_penalty + high_risk_misalignment, 4
+            ),
             "fraud_bonus": round(fraud_bonus, 4),
         }
 

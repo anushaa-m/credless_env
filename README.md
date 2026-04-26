@@ -122,6 +122,19 @@ Reward wiring:
 - `-0.3` for false positive income-lie flags
 - `-1.0` missed-lie penalty if agent approves without detecting a true `>2 sigma` lie
 
+## Delinquency time-decay (recency vs FICO-style static counts)
+
+FinVerse down-weights **stale** delinquency and overdraft signals using
+`bank_account_age_months` as a temporal proxy: recent problems keep more of
+their impact; old events on a mature account are discounted before the oracle
+runs `predict_proba`. Each applicant carries a `credit_trajectory` summary
+(also requestable via `request_info`: `last_delinquency_months_ago`,
+`bank_account_age_months`, `overdraft_count`). **Pitch:** unlike a static
+bureau snapshot, recency weighting rewards recovery and long clean runs.
+
+The `AuditorAgent` awards a small reasoning bonus when the rationale explicitly
+references recency, stability, or historical vs recent behavior.
+
 ## Commands
 
 Train CredLess Agent 1:

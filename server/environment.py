@@ -31,6 +31,9 @@ INCOME_LIE_DETECTION_REWARD = 0.5
 INCOME_LIE_FALSE_POSITIVE_PENALTY = 0.3
 INCOME_LIE_MISSED_PENALTY = 1.0
 INCOME_VERIFICATION_FIELDS = {"stated_income", "transaction_health"}
+EXTRA_REQUESTABLE_FIELDS = frozenset(
+    {"stated_income", "last_delinquency_months_ago", "bank_account_age_months", "overdraft_count"}
+)
 _SHARED_ORACLE: CredLessOracle | None = None
 _SHARED_RISK_PREDICTOR: FrozenRiskPredictor | None = None
 POLICY_REQUIRED_FIELDS = {
@@ -172,11 +175,17 @@ class CreditAnalystEnvironment(Environment):
         declared_income_payload = {}
         if "stated_income" in self._revealed_fields:
             declared_income_payload = dict(self._revealed_fields["stated_income"])
+        traj = dict(self._applicant.get("credit_trajectory", {}) or {})
         return {
             "applicant_id": self._applicant.get("applicant_id", ""),
             "profile": dict(self._revealed_fields),
             "declared_income": declared_income_payload,
-            "missing_fields": [field for field in list(FIELD_NAMES) + ["stated_income"] if field not in self._revealed_fields],
+            "credit_trajectory": traj,
+            "missing_fields": [
+                field
+                for field in list(FIELD_NAMES) + list(EXTRA_REQUESTABLE_FIELDS)
+                if field not in self._revealed_fields
+            ],
             "declared_quality": self._applicant.get("data_quality", "observed_with_noise"),
             "source": self._applicant.get("source", "dataset_sample"),
         }
@@ -241,18 +250,62 @@ class CreditAnalystEnvironment(Environment):
     def _reveal_field(self, field: str, source: str) -> None:
         if field == "stated_income":
             income_verification = dict(self._applicant.get("income_verification", {}))
-            stated_income = float(income_verification.get("stated_income", 0.0))
+            try:
+                stated_income = float(income_verification.get("stated_income", 0.0))
+            except (TypeError, ValueError):
+                stated_income = 0.0
             self._revealed_fields[field] = {
                 "value": round(stated_income, 2),
                 "confidence": 0.86,
                 "source": source,
             }
             return
-        self._revealed_fields[field] = {
-            "value": round(float(self._applicant["presented_features"][field]), 6),
-            "confidence": round(float(self._applicant["field_confidence"][field]), 3),
-            "source": source,
-        }
+        if field == "last_delinquency_months_ago":
+            traj = dict(self._applicant.get("credit_trajectory", {}) or {})
+            try:
+                val = float(traj.get("last_delinquency_months_ago", 0.0))
+            except (TypeError, ValueError):
+                val = 0.0
+            self._revealed_fields[field] = {
+                "value": round(val, 2),
+                "confidence": 0.88,
+                "source": source,
+            }
+            return
+        if field == "bank_account_age_months":
+            traj = dict(self._applicant.get("credit_trajectory", {}) or {})
+            raw_row = dict(self._applicant.get("raw_row", {}) or {})
+            try:
+                val = float(raw_row.get("bank_account_age_months", traj.get("account_age_months", 0.0)))
+            except (TypeError, ValueError):
+                val = 0.0
+            self._revealed_fields[field] = {
+                "value": round(val, 2),
+                "confidence": 0.9,
+                "source": source,
+            }
+            return
+        if field == "overdraft_count":
+            traj = dict(self._applicant.get("credit_trajectory", {}) or {})
+            raw_row = dict(self._applicant.get("raw_row", {}) or {})
+            try:
+                val = float(traj.get("overdraft_count", raw_row.get("overdraft_count", 0)))
+            except (TypeError, ValueError):
+                val = 0.0
+            self._revealed_fields[field] = {
+                "value": round(val, 4),
+                "confidence": 0.87,
+                "source": source,
+            }
+            return
+        try:
+            self._revealed_fields[field] = {
+                "value": round(float(self._applicant["presented_features"][field]), 6),
+                "confidence": round(float(self._applicant["field_confidence"][field]), 3),
+                "source": source,
+            }
+        except (KeyError, TypeError, ValueError):
+            self._revealed_fields[field] = {"value": 0.0, "confidence": 0.5, "source": source}
 
     def _income_discrepancy(self) -> Dict[str, float | bool]:
         if any(field not in self._revealed_fields for field in INCOME_VERIFICATION_FIELDS):
@@ -310,10 +363,14 @@ class CreditAnalystEnvironment(Environment):
         return dict(self._current_features())
 
     def _current_features(self) -> Dict[str, float]:
-        return {
-            field: round(float(self._applicant["presented_features"][field]), 6)
-            for field in FIELD_NAMES
-        }
+        presented = self._applicant.get("presented_features")
+        base = self._applicant.get("features", {}) or {}
+        if isinstance(presented, dict):
+            return {
+                field: round(float(presented.get(field, base.get(field, 0.0))), 6)
+                for field in FIELD_NAMES
+            }
+        return {field: round(float(base.get(field, 0.0)), 6) for field in FIELD_NAMES}
 
     def _refresh_current_observation(self) -> Dict[str, Any]:
         features = self._current_features()
@@ -474,6 +531,7 @@ class CreditAnalystEnvironment(Environment):
         self._ground_truth = self.oracle.predict(
             self._applicant["features"],
             market_condition=self._market_state["name"],
+            trajectory=self._applicant.get("credit_trajectory"),
         )
         self._market_visible = False
         self._current_policy = self._build_policy(rng)
@@ -585,7 +643,7 @@ class CreditAnalystEnvironment(Environment):
         field = str(action.params.get("field", "")).strip()
         if not field:
             return self._invalid("request_info requires params.field.")
-        if field not in FIELD_NAMES and field != "stated_income":
+        if field not in FIELD_NAMES and field not in EXTRA_REQUESTABLE_FIELDS:
             return self._invalid(f"Unknown applicant field '{field}'.")
         if field in self._revealed_fields:
             return self._invalid(f"Field '{field}' is already visible.", penalty=0.10)
@@ -776,6 +834,7 @@ class CreditAnalystEnvironment(Environment):
         explanation = self.oracle.explain_decision(
             self._applicant["features"],
             market_condition=self._market_state["name"],
+            trajectory=self._applicant.get("credit_trajectory"),
         )
         confidence = float(self._ground_truth.get("confidence", 0.5))
         terminal_decision = "approve" if action.action_type == "conditional_approve" else action.action_type

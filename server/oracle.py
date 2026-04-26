@@ -9,6 +9,8 @@ import numpy as np
 
 from credless_model.dataset_pipeline import FEATURE_NAMES, load_dataset_cache
 
+from .credit_recency import apply_delinquency_recency
+
 MODEL_PATH = Path(__file__).parent.parent / "credless_model" / "model.pkl"
 
 MARKET_SCENARIOS: Dict[str, Dict[str, object]] = {
@@ -178,9 +180,18 @@ class CredLessOracle:
             adjusted[field] = float(np.clip(adjusted[field] * float(multiplier), lo, hi))
         return adjusted
 
-    def predict_risk(self, features: Dict[str, float], market_condition: str = "Stable Credit") -> float:
+    def predict_risk(
+        self,
+        features: Dict[str, float],
+        market_condition: str = "Stable Credit",
+        trajectory: Dict[str, object] | None = None,
+    ) -> float:
         config = MARKET_SCENARIOS.get(market_condition, MARKET_SCENARIOS["Stable Credit"])
-        adjusted_features = self._apply_market_adjustments(features, market_condition)
+        try:
+            feats = apply_delinquency_recency(dict(features), trajectory) if trajectory else dict(features)
+        except Exception:
+            feats = dict(features)
+        adjusted_features = self._apply_market_adjustments(feats, market_condition)
 
         if self.model is None or self.use_fallback:
             prob = self._legacy_default_prob(adjusted_features)
@@ -196,9 +207,14 @@ class CredLessOracle:
 
         return float(np.clip(prob * float(config["risk_multiplier"]), 0.0, 1.0))
 
-    def predict(self, features: Dict[str, float], market_condition: str = "Stable Credit") -> Dict[str, object]:
+    def predict(
+        self,
+        features: Dict[str, float],
+        market_condition: str = "Stable Credit",
+        trajectory: Dict[str, object] | None = None,
+    ) -> Dict[str, object]:
         config = MARKET_SCENARIOS.get(market_condition, MARKET_SCENARIOS["Stable Credit"])
-        prob = self.predict_risk(features, market_condition=market_condition)
+        prob = self.predict_risk(features, market_condition=market_condition, trajectory=trajectory)
         market_index = float(config["risk_multiplier"])
         low_thresh = _market_dynamic_threshold(self.low_thresh, market_index)
         high_thresh = _market_dynamic_threshold(self.high_thresh, market_index)
@@ -235,10 +251,19 @@ class CredLessOracle:
             "market_summary": config["summary"],
         }
 
-    def explain_decision(self, features: Dict[str, float], market_condition: str = "Stable Credit") -> Dict[str, object]:
-        risk = self.predict_risk(features, market_condition=market_condition)
-        result = self.predict(features, market_condition=market_condition)
-        adjusted = self._apply_market_adjustments(features, market_condition)
+    def explain_decision(
+        self,
+        features: Dict[str, float],
+        market_condition: str = "Stable Credit",
+        trajectory: Dict[str, object] | None = None,
+    ) -> Dict[str, object]:
+        risk = self.predict_risk(features, market_condition=market_condition, trajectory=trajectory)
+        result = self.predict(features, market_condition=market_condition, trajectory=trajectory)
+        try:
+            base = apply_delinquency_recency(dict(features), trajectory) if trajectory else dict(features)
+        except Exception:
+            base = dict(features)
+        adjusted = self._apply_market_adjustments(base, market_condition)
 
         if hasattr(self.model, "coef_"):
             coef = np.asarray(self.model.coef_[0], dtype=float)
