@@ -171,6 +171,7 @@ def _build_response(
         session_id=state.session_id,
         episode_id=state.episode_id,
         info=response_info,
+        portfolio_context=dict(observation.get("portfolio_context", {})),
     )
 
 

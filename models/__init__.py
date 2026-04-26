@@ -6,7 +6,7 @@ from openenv.core.env_server.types import Action, Observation
 from pydantic import BaseModel, Field
 
 
-TerminalAction = Literal["approve", "deny", "escalate"]
+TerminalAction = Literal["approve", "conditional_approve", "deny", "escalate"]
 FinVerseActionType = Literal[
     "request_info",
     "query_market",
@@ -37,6 +37,8 @@ class FinVerseObservation(Observation):
     market_state: Optional[Dict[str, Any]] = Field(default=None)
     current_policy: Dict[str, Any] = Field(default_factory=dict)
     compliance_history: List[float] = Field(default_factory=list)
+    auditor_score: float = Field(default=0.0)
+    audit_history: List[Dict[str, Any]] = Field(default_factory=list)
     step: int = Field(default=0)
     max_steps: int = Field(default=8)
     fraud_flags_raised: List[str] = Field(default_factory=list)
@@ -46,6 +48,7 @@ class FinVerseObservation(Observation):
     message: str = Field(default="")
     episode_score: float = Field(default=0.0)
     task_name: str = Field(default="binary_decision")
+    portfolio_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class FinVerseReward(BaseModel):
@@ -69,6 +72,7 @@ class FinVerseState(BaseModel):
     fraud_checked: bool = Field(default=False)
     steps_taken: int = Field(default=0)
     auditor_compliance_log: List[float] = Field(default_factory=list)
+    audit_history: List[Dict[str, Any]] = Field(default_factory=list)
     episode_count: int = Field(default=0)
 
 

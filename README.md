@@ -96,6 +96,14 @@ Reward shaping is anti-hacking by design: medium-risk conditional approvals scor
 better than a wrong hard decision, while misuse on clear low/high-risk profiles
 is penalized.
 
+## Auditor Agent Oversight
+
+CredLess now runs a dedicated `AuditorAgent` that wraps deterministic
+`audit_terminal_action()` logic and performs explicit bias checks on reasoning.
+Each terminal decision is reviewed by the auditor, and both `auditor_score` and
+`audit_history` are returned in the observation so Agent 2 can learn to be right
+for the right reasons (not just maximize raw reward).
+
 ## Commands
 
 Train CredLess Agent 1:

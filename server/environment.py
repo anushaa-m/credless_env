@@ -9,7 +9,7 @@ from openenv.core.env_server.interfaces import Environment
 from models import FinVerseAction, FinVerseObservation, FinVerseState
 from pipeline.main_pipeline import FrozenRiskPredictor
 from .data_generator import FIELD_NAMES, generate_applicant
-from .graders import audit_terminal_action, evaluate_terminal_action
+from .graders import AuditorAgent, evaluate_terminal_action
 from .oracle import MARKET_SCENARIOS, CredLessOracle
 from .tasks import TASK_DIFFICULTY, TASK_NAMES
 
@@ -45,9 +45,12 @@ class CreditAnalystEnvironment(Environment):
             _SHARED_RISK_PREDICTOR = FrozenRiskPredictor()
         self.oracle = _SHARED_ORACLE
         self.risk_predictor = _SHARED_RISK_PREDICTOR
+        self.auditor = AuditorAgent()
         self._session_id = str(uuid.uuid4())
         self._episode_count = 0
         self._auditor_compliance_log: List[float] = []
+        self._audit_history: List[Dict[str, Any]] = []
+        self._latest_auditor_score = 0.0
         self._episode_id = ""
         self._task = "binary_decision"
         self._difficulty = "easy"
@@ -67,6 +70,10 @@ class CreditAnalystEnvironment(Environment):
         self._last_info: Dict[str, Any] = {}
         self._current_observation: Dict[str, Any] = {}
         self.trajectory: List[Any] = []
+        self.running_approve_count = 0
+        self.running_risk_sum = 0.0
+        self.completed_episode_count = 0
+        self.MAX_APPROVE_CAP = 100
 
     def set_session_id(self, session_id: str) -> None:
         self._session_id = str(session_id)
@@ -76,6 +83,8 @@ class CreditAnalystEnvironment(Environment):
             "session_id": self._session_id,
             "episode_count": self._episode_count,
             "auditor_compliance_log": list(self._auditor_compliance_log),
+            "audit_history": list(self._audit_history),
+            "latest_auditor_score": float(self._latest_auditor_score),
             "episode_id": self._episode_id,
             "task": self._task,
             "difficulty": self._difficulty,
@@ -95,12 +104,17 @@ class CreditAnalystEnvironment(Environment):
             "last_info": dict(self._last_info),
             "current_observation": dict(self._current_observation),
             "trajectory": list(self.trajectory),
+            "running_approve_count": self.running_approve_count,
+            "running_risk_sum": self.running_risk_sum,
+            "completed_episode_count": self.completed_episode_count,
         }
 
     def restore_snapshot(self, snapshot: Dict[str, Any]) -> None:
         self._session_id = str(snapshot.get("session_id", self._session_id))
         self._episode_count = int(snapshot.get("episode_count", 0))
         self._auditor_compliance_log = list(snapshot.get("auditor_compliance_log", []))
+        self._audit_history = list(snapshot.get("audit_history", []))
+        self._latest_auditor_score = float(snapshot.get("latest_auditor_score", 0.0))
         self._episode_id = str(snapshot.get("episode_id", ""))
         self._task = str(snapshot.get("task", "binary_decision"))
         self._difficulty = str(snapshot.get("difficulty", "easy"))
@@ -120,6 +134,9 @@ class CreditAnalystEnvironment(Environment):
         self._last_info = dict(snapshot.get("last_info", {}))
         self._current_observation = dict(snapshot.get("current_observation", {}))
         self.trajectory = list(snapshot.get("trajectory", []))
+        self.running_approve_count = int(snapshot.get("running_approve_count", 0))
+        self.running_risk_sum = float(snapshot.get("running_risk_sum", 0.0))
+        self.completed_episode_count = int(snapshot.get("completed_episode_count", 0))
 
     def _build_policy(self, rng: random.Random) -> Dict[str, Any]:
         max_dti = {
@@ -168,6 +185,14 @@ class CreditAnalystEnvironment(Environment):
                 "sector_outlook": self._market_state["sector_outlook"],
                 "name": self._market_state["name"],
             }
+        episode_count = max(1, self.completed_episode_count)
+        portfolio_context = {
+            "session_approve_rate": round(self.running_approve_count / episode_count, 4),
+            "session_avg_risk": round(self.running_risk_sum / episode_count, 4),
+            "regulatory_cap_used": round(self.running_approve_count / self.MAX_APPROVE_CAP, 4),
+            "completed_episode_count": self.completed_episode_count,
+            "max_approve_cap": self.MAX_APPROVE_CAP,
+        }
 
         return FinVerseObservation(
             applicant=self._applicant_payload(),
@@ -179,6 +204,8 @@ class CreditAnalystEnvironment(Environment):
             market_state=market_state,
             current_policy=dict(self._current_policy),
             compliance_history=list(self._auditor_compliance_log[-3:]),
+            auditor_score=round(float(self._latest_auditor_score), 4),
+            audit_history=list(self._audit_history[-5:]),
             step=self._steps_taken,
             max_steps=MAX_STEPS,
             fraud_flags_raised=list(self._fraud_flags),
@@ -188,6 +215,7 @@ class CreditAnalystEnvironment(Environment):
             message=message,
             episode_score=round(episode_score, 4),
             task_name=self._task,
+            portfolio_context=portfolio_context,
         )
 
     def _append_conversation(self, role: str, content: str) -> None:
@@ -439,6 +467,7 @@ class CreditAnalystEnvironment(Environment):
         )
         self._refresh_current_observation()
         self._set_last_info("Episode reset.", 0.0, {})
+        self._latest_auditor_score = 0.0
         return self._build_observation(message="Episode reset. Investigate before making a terminal decision.").model_dump()
 
     def _invalid(self, message: str, penalty: float = INVALID_ACTION_PENALTY) -> FinVerseObservation:
@@ -460,12 +489,11 @@ class CreditAnalystEnvironment(Environment):
     def _ensure_active(self) -> Optional[FinVerseObservation]:
         if not self._episode_id:
             self._set_last_info("ERROR: call /reset before /step.", 0.0, {"invalid_action": INVALID_ACTION_PENALTY})
-            return FinVerseObservation(
+            return self._build_observation(
                 step_reward=-(INVALID_ACTION_PENALTY + STEP_PENALTY),
                 done=True,
                 message="ERROR: call /reset before /step.",
                 episode_score=0.0,
-                task_name=self._task,
             )
         if self._done:
             self._set_last_info(
@@ -687,13 +715,24 @@ class CreditAnalystEnvironment(Environment):
             "top_factors": explanation.get("feature_contributions", []),
             "default_prob": self._ground_truth.get("default_prob"),
         }
-        auditor_result = audit_terminal_action(
-            final_action=final_action,
+        auditor_result = self.auditor.review(
+            action=final_action,
             oracle_truth=self._ground_truth,
             revealed_fields=self._revealed_fields,
             market_visible=self._market_visible,
             fraud_flags=self._fraud_flags,
         )
+        self._latest_auditor_score = float(auditor_result.get("score", 0.0))
+        audit_report = {
+            "step": self._steps_taken,
+            "action_type": action.action_type,
+            "score": round(float(auditor_result.get("score", 0.0)), 4),
+            "oracle_alignment": round(float(auditor_result.get("oracle_alignment", 0.0)), 4),
+            "reasoning_score": round(float(auditor_result.get("reasoning_score", 0.0)), 4),
+            "bias_detected": bool(auditor_result.get("bias_detected", False)),
+            "message": str(auditor_result.get("message", "")),
+        }
+        self._audit_history.append(audit_report)
         evaluation = evaluate_terminal_action(
             final_action=final_action,
             oracle_truth=self._ground_truth,
@@ -704,6 +743,12 @@ class CreditAnalystEnvironment(Environment):
             applicant_is_fraudulent=bool(self._applicant.get("is_adversarial", False)),
         )
         reward = max(-1.5, min(1.5, float(evaluation["reward"])))
+        risk = float(self._ground_truth.get("default_prob", 0.5))
+        self.completed_episode_count += 1
+        self.running_risk_sum += risk
+
+        if action.action_type in {"approve", "conditional_approve"}:
+            self.running_approve_count += 1
         self._cumulative_reward += reward
         self._done = True
         self._last_episode_score = reward
@@ -743,6 +788,8 @@ class CreditAnalystEnvironment(Environment):
             self._ground_truth.get("decision"),
         )
         self._last_info["conditional_candidate"] = bool(self._ground_truth.get("conditional_candidate", False))
+        self._last_info["auditor_report"] = dict(audit_report)
+        self._last_info["auditor_score"] = round(float(self._latest_auditor_score), 4)
         self._record_reward_components(
             task_score=evaluation.get("task_score", 0.0),
             auditor_score=evaluation.get("auditor_score", 0.0),
@@ -826,5 +873,6 @@ class CreditAnalystEnvironment(Environment):
             fraud_checked=bool(self._fraud_flags),
             steps_taken=self._steps_taken,
             auditor_compliance_log=list(self._auditor_compliance_log),
+            audit_history=list(self._audit_history),
             episode_count=self._episode_count,
         )

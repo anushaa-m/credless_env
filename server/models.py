@@ -18,3 +18,4 @@ class FinVerseResponse(BaseModel):
     session_id: str = Field(default="")
     episode_id: str = Field(default="")
     info: Dict[str, Any] = Field(default_factory=dict)
+    portfolio_context: Dict[str, Any] = Field(default_factory=dict)
