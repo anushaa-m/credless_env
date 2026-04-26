@@ -2,7 +2,7 @@
 
 > **The invisible borrower problem:** 1.7 billion adults worldwide are unbanked. Not because they can't repay — but because traditional credit bureaus have no record of them. A student's UPI history, a gig worker's salary consistency, a first-time earner's overdraft behavior — none of it counts. CredLess-Env is a reinforcement learning environment that changes this. Instead of a CIBIL score, it trains an AI agent to act as a loan officer who reads behavioral financial signals and makes explainable lending decisions.
 
-**Live:** [huggingface.co/spaces/anushaa-m/credless-env](https://huggingface.co/spaces/anushaa-m/credless-env) | **Code:** [github.com/anushaa-m/credless_env](https://github.com/anushaa-m/credless_env)
+**Live:** [huggingface.co/spaces/anushaa-m/credless-env](https://huggingface.co/spaces/anushaa-m/credless-env) | **Code:** [github.com/anushaa-m/credless_env](https://github.com/anushaa-m/credless_env) | **API Docs:** [Swagger UI](https://anushaa-m-credless-env.hf.space/docs) | **Health:** [/health](https://anushaa-m-credless-env.hf.space/health) | **This Blog:** [blog.md](https://huggingface.co/spaces/anushaa-m/credless-env/blob/main/blog.md)
 
 ---
 
@@ -373,4 +373,4 @@ CredLess-Env is production-ready today. Three extensions are already designed:
 
 *Built with FastAPI · Logistic Regression · Qwen2.5-0.5B · TRL/GRPO · OpenEnv · 150,000 real lending profiles*
 
-**GitHub:** https://github.com/anushaa-m/credless_env | **HF Space:** https://huggingface.co/spaces/anushaa-m/credless-env
+**GitHub:** https://github.com/anushaa-m/credless_env | **HF Space:** https://huggingface.co/spaces/anushaa-m/credless-env | **API Docs:** https://anushaa-m-credless-env.hf.space/docs | **Health:** https://anushaa-m-credless-env.hf.space/health | **Blog:** https://huggingface.co/spaces/anushaa-m/credless-env/blob/main/blog.md
