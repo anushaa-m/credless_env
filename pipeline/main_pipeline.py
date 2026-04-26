@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import pickle
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -17,17 +16,7 @@ from pipeline.reasoning import generate_reasoning
 
 ROOT = Path(__file__).resolve().parent.parent
 AGENT2_MODULE_PATH = ROOT / "agent2-decision-base" / "train.py"
-FINVERSE_MODEL_PATH = ROOT / "models" / "saved" / "finverse_model.pkl"
-FINVERSE_SCALER_PATH = ROOT / "models" / "saved" / "scaler.pkl"
-LEGACY_AGENT1_PATH = ROOT / "credless_model" / "model.pkl"
-
-MARITAL_STATUS_MAP = {
-    "single": 0.0,
-    "married": 1.0,
-    "divorced": 2.0,
-    "widowed": 3.0,
-    "unknown": 4.0,
-}
+AGENT1_PATH = ROOT / "credless_model" / "model.pkl"
 EMPLOYMENT_TYPE_MAP = {
     "unemployed": 0.0,
     "contract": 1.0,
@@ -102,51 +91,28 @@ def _normalize_user_data(user_data: Mapping[str, Any]) -> dict[str, Any]:
 class FrozenRiskPredictor:
     def __init__(self) -> None:
         self.raw_feature_defaults = dict(RAW_DEFAULTS)
-        self._feature_stats = self._compute_feature_stats()
-
-        self.backend = ""
+        self.backend = "credless_oracle"
         self.model: Any | None = None
-        self.scaler: Any | None = None
         self.feature_order: list[str] = []
         self.positive_class_meaning = "default_risk"
 
-        if FINVERSE_MODEL_PATH.exists() and FINVERSE_SCALER_PATH.exists():
-            with open(FINVERSE_MODEL_PATH, "rb") as handle:
-                artifact = pickle.load(handle)
-            with open(FINVERSE_SCALER_PATH, "rb") as handle:
-                self.scaler = pickle.load(handle)
-            self.model = artifact["model"]
-            self.feature_order = list(artifact["feature_cols"])
-            self.backend = "finverse_saved"
-            self.positive_class_meaning = "approve"
-            return
-
-        if LEGACY_AGENT1_PATH.exists():
-            artifact = joblib.load(LEGACY_AGENT1_PATH)
+        if AGENT1_PATH.exists():
+            artifact = joblib.load(AGENT1_PATH)
             self.model = artifact["model"] if isinstance(artifact, dict) else artifact
             self.feature_order = list(artifact.get("feature_names", FEATURE_NAMES)) if isinstance(artifact, dict) else list(FEATURE_NAMES)
-            self.backend = "credless_legacy"
-            self.positive_class_meaning = "default_risk"
             return
 
         raise FileNotFoundError(
-            "No supported Agent 1 artifact was found. Expected either "
-            f"{FINVERSE_MODEL_PATH} and {FINVERSE_SCALER_PATH}, or {LEGACY_AGENT1_PATH}."
+            "CredLess Agent 1 artifact missing. Expected "
+            f"{AGENT1_PATH}."
         )
 
     def predict(self, user_data: Mapping[str, Any]) -> float:
-        if self.backend == "finverse_saved":
-            approve_probability, _ = self._predict_finverse(user_data)
-            return float(np.clip(1.0 - approve_probability, 0.0, 1.0))
         default_probability, _ = self._predict_legacy(user_data)
         return float(np.clip(default_probability, 0.0, 1.0))
 
     def explain(self, user_data: Mapping[str, Any], top_k: int = 3) -> list[dict[str, Any]]:
-        if self.backend == "finverse_saved":
-            _, details = self._predict_finverse(user_data)
-        else:
-            _, details = self._predict_legacy(user_data)
-
+        _, details = self._predict_legacy(user_data)
         contributions = details.get("contributions", [])
         top_items = sorted(contributions, key=lambda item: abs(float(item[1])), reverse=True)[:top_k]
         explanation: list[dict[str, Any]] = []
@@ -170,27 +136,6 @@ class FrozenRiskPredictor:
             )
         return explanation
 
-    def _predict_finverse(self, user_data: Mapping[str, Any]) -> tuple[float, dict[str, Any]]:
-        vector_frame = self._prepare_finverse_frame(user_data)
-        scaled = self.scaler.transform(vector_frame[self.feature_order].to_numpy())
-        probability = float(self.model.predict_proba(scaled)[0][1])
-
-        contributions: list[tuple[str, float]] = []
-        if hasattr(self.model, "coef_"):
-            coef = np.asarray(self.model.coef_[0], dtype=float)
-            risk_contrib = -coef * scaled[0]
-            contributions = list(zip(self.feature_order, risk_contrib.tolist()))
-        elif hasattr(self.model, "feature_importances_"):
-            importances = np.asarray(self.model.feature_importances_, dtype=float)
-            row = vector_frame[self.feature_order].iloc[0]
-            contributions = []
-            for feature_name, importance in zip(self.feature_order, importances):
-                baseline = self._feature_stats.get(feature_name, {"mean": 0.0, "std": 1.0})
-                z_score = (float(row[feature_name]) - baseline["mean"]) / baseline["std"]
-                contributions.append((feature_name, float(z_score * importance)))
-
-        return probability, {"contributions": contributions}
-
     def _predict_legacy(self, user_data: Mapping[str, Any]) -> tuple[float, dict[str, Any]]:
         feature_frame = self._prepare_legacy_features(user_data)
         vector = feature_frame[self.feature_order].to_numpy()
@@ -203,41 +148,10 @@ class FrozenRiskPredictor:
 
         return probability, {"contributions": contributions}
 
-    def _prepare_finverse_frame(self, user_data: Mapping[str, Any]) -> pd.DataFrame:
-        values = _normalize_user_data(user_data)
-        record: dict[str, float] = {}
-
-        for feature_name in self.feature_order:
-            if feature_name.endswith("_enc"):
-                base = feature_name[:-4]
-                raw_value = str(values.get(base, "unknown") or "unknown").strip().lower()
-                if base == "marital_status":
-                    record[feature_name] = MARITAL_STATUS_MAP.get(raw_value, MARITAL_STATUS_MAP["unknown"])
-                elif base == "employment_type":
-                    record[feature_name] = EMPLOYMENT_TYPE_MAP.get(raw_value, EMPLOYMENT_TYPE_MAP["unknown"])
-                else:
-                    record[feature_name] = 0.0
-                continue
-
-            raw_value = values.get(feature_name, self.raw_feature_defaults.get(feature_name, 0.0))
-            try:
-                record[feature_name] = float(raw_value)
-            except (TypeError, ValueError):
-                record[feature_name] = float(self.raw_feature_defaults.get(feature_name, 0.0))
-
-        return pd.DataFrame([record], columns=self.feature_order)
-
     def _prepare_legacy_features(self, user_data: Mapping[str, Any]) -> pd.DataFrame:
         values = _normalize_user_data(user_data)
         row_features = self._engineer_legacy_row(values)
         return pd.DataFrame([row_features], columns=self.feature_order)
-
-    def _compute_feature_stats(self) -> dict[str, dict[str, float]]:
-        stats: dict[str, dict[str, float]] = {}
-        for column, default in RAW_DEFAULTS.items():
-            scale = max(abs(float(default)), 1.0)
-            stats[column] = {"mean": float(default), "std": scale}
-        return stats
 
     def _engineer_legacy_row(self, values: Mapping[str, Any]) -> dict[str, float]:
         def _num(name: str) -> float:
@@ -374,7 +288,13 @@ class CreditDecisionEnvironment:
     def step(self, action: str) -> dict[str, Any]:
         normalized_action = "APPROVE" if str(action).upper() == "APPROVE" else "REJECT"
         approve_confidence = float(self.oracle["confidence"])
-        reward = approve_confidence if normalized_action == "APPROVE" else 1.0 - approve_confidence
+        oracle_confidence = (
+            approve_confidence
+            if str(self.oracle.get("decision", "")).strip().lower() == "approve"
+            else 1.0 - approve_confidence
+        )
+        base_reward = approve_confidence if normalized_action == "APPROVE" else 1.0 - approve_confidence
+        reward = round(base_reward * oracle_confidence, 4)
         explanation = generate_reasoning(self.user_data, self.oracle)
         self.done = True
         return {
@@ -384,7 +304,7 @@ class CreditDecisionEnvironment:
                 "explanation": explanation,
                 "oracle_score": float(reward),
                 "oracle_decision": "APPROVE" if self.oracle["decision"] == "approve" else "REJECT",
-                "oracle_confidence": approve_confidence,
+                "oracle_confidence": float(oracle_confidence),
             },
         }
 
@@ -407,15 +327,18 @@ class CreditDecisionPipeline:
         risk_score = float(self.agent1.predict(normalized_user))
         active_shap = list(shap_info) if shap_info is not None else self.agent1.explain(normalized_user)
         policy_output = self.agent2.generate_with_metadata(normalized_user, risk_score, active_shap)
+        decision = policy_output.decision
         active_env = env or CreditDecisionEnvironment(normalized_user)
-        raw_result = active_env.step(policy_output.decision)
+        raw_result = active_env.step(decision)
         result = _normalize_env_result(raw_result, active_env)
+        result["info"].setdefault("risk_score", risk_score)
+
         result.update(
             {
                 "user_data": normalized_user,
                 "risk_score": risk_score,
                 "shap_info": active_shap,
-                "decision": policy_output.decision,
+                "decision": decision,
                 "policy_output": {
                     "raw_text": policy_output.raw_text,
                     "prompt": policy_output.prompt,

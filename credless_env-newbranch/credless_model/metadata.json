@@ -1,0 +1,45 @@
+{
+  "model_name": "LogisticRegression",
+  "feature_names": [
+    "revolving_utilization",
+    "delinquency_30_59",
+    "delinquency_60_89",
+    "delinquency_90plus",
+    "total_delinquency_score",
+    "debt_burden_score",
+    "real_estate_exposure",
+    "medical_stress_score",
+    "income_capacity_score",
+    "net_worth_score",
+    "asset_ownership_score",
+    "payment_reliability",
+    "transaction_health",
+    "overdraft_risk",
+    "employment_stability",
+    "account_maturity",
+    "business_health_score",
+    "age_years",
+    "open_credit_lines",
+    "location_risk_index"
+  ],
+  "curriculum": [
+    "stage1_easy",
+    "stage2_medium",
+    "stage3_hard"
+  ],
+  "threshold": 0.365372,
+  "risk_thresholds": {
+    "low_risk": 0.2192,
+    "medium_risk": 0.3654
+  },
+  "splits": {
+    "train_rows": 105000,
+    "validation_rows": 22500,
+    "test_rows": 22500,
+    "source": "prepared_splits"
+  },
+  "raw_dataset_target_mapping": {
+    "raw_target_1": "non_default_or_good_outcome",
+    "model_target_1": "default_risk"
+  }
+}

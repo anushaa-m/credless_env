@@ -1,0 +1,404 @@
+{
+  "session_id": "25414a35-0177-4948-bea9-3764a4d01057",
+  "episode_count": 1,
+  "auditor_compliance_log": [
+    -0.96
+  ],
+  "episode_id": "22023191-c89a-4b55-8c99-d06e389c1dbb",
+  "task": "binary_decision",
+  "difficulty": "easy",
+  "steps_taken": 8,
+  "cumulative_reward": -5.93,
+  "applicant": {
+    "applicant_id": "4006731D",
+    "features": {
+      "revolving_utilization": 0.143973396,
+      "delinquency_30_59": 0.0,
+      "delinquency_60_89": 0.0,
+      "delinquency_90plus": 0.0,
+      "total_delinquency_score": 0.0,
+      "debt_burden_score": 0.37822752400734444,
+      "real_estate_exposure": 0.0,
+      "medical_stress_score": 0.5349542815720332,
+      "income_capacity_score": 0.7777004841278123,
+      "net_worth_score": 0.8996101515617257,
+      "asset_ownership_score": 0.4,
+      "payment_reliability": 0.7212237622411112,
+      "transaction_health": 0.7521260339488824,
+      "overdraft_risk": 0.0,
+      "employment_stability": 0.7039531583116361,
+      "account_maturity": 0.4955769240121356,
+      "business_health_score": 0.8028571428571428,
+      "age_years": 0.6333333333333333,
+      "open_credit_lines": 0.26666666666666666,
+      "location_risk_index": 0.538461538
+    },
+    "presented_features": {
+      "revolving_utilization": 0.143973396,
+      "delinquency_30_59": 0.0,
+      "delinquency_60_89": 0.0,
+      "delinquency_90plus": 0.0,
+      "total_delinquency_score": 0.0,
+      "debt_burden_score": 0.37822752400734444,
+      "real_estate_exposure": 0.0,
+      "medical_stress_score": 0.5141501694428496,
+      "income_capacity_score": 0.7777004841278123,
+      "net_worth_score": 0.8996101515617257,
+      "asset_ownership_score": 0.4,
+      "payment_reliability": 0.7212237622411112,
+      "transaction_health": 0.7936298922802144,
+      "overdraft_risk": 0.0,
+      "employment_stability": 0.7039531583116361,
+      "account_maturity": 0.4955769240121356,
+      "business_health_score": 0.8028571428571428,
+      "age_years": 0.6333333333333333,
+      "open_credit_lines": 0.26666666666666666,
+      "location_risk_index": 0.538461538
+    },
+    "field_confidence": {
+      "revolving_utilization": 0.815,
+      "delinquency_30_59": 0.785,
+      "delinquency_60_89": 0.813,
+      "delinquency_90plus": 0.902,
+      "total_delinquency_score": 0.76,
+      "debt_burden_score": 0.883,
+      "real_estate_exposure": 0.889,
+      "medical_stress_score": 0.804,
+      "income_capacity_score": 0.819,
+      "net_worth_score": 0.723,
+      "asset_ownership_score": 0.817,
+      "payment_reliability": 0.775,
+      "transaction_health": 0.943,
+      "overdraft_risk": 0.724,
+      "employment_stability": 0.927,
+      "account_maturity": 0.873,
+      "business_health_score": 0.958,
+      "age_years": 0.879,
+      "open_credit_lines": 0.928,
+      "location_risk_index": 0.861
+    },
+    "uncertainty_flags": {
+      "revolving_utilization": 0.185,
+      "delinquency_30_59": 0.215,
+      "delinquency_60_89": 0.187,
+      "delinquency_90plus": 0.098,
+      "total_delinquency_score": 0.24,
+      "debt_burden_score": 0.117,
+      "real_estate_exposure": 0.111,
+      "medical_stress_score": 0.196,
+      "income_capacity_score": 0.181,
+      "net_worth_score": 0.277,
+      "asset_ownership_score": 0.183,
+      "payment_reliability": 0.225,
+      "transaction_health": 0.057,
+      "overdraft_risk": 0.276,
+      "employment_stability": 0.073,
+      "account_maturity": 0.127,
+      "business_health_score": 0.042,
+      "age_years": 0.121,
+      "open_credit_lines": 0.072,
+      "location_risk_index": 0.139
+    },
+    "hidden_fields": [
+      "asset_ownership_score",
+      "debt_burden_score",
+      "real_estate_exposure",
+      "transaction_health"
+    ],
+    "visible_fields": [
+      "account_maturity",
+      "employment_stability",
+      "income_capacity_score",
+      "location_risk_index",
+      "payment_reliability"
+    ],
+    "data_quality": "observed_with_noise",
+    "applicant_behavior": "honest",
+    "is_adversarial": false,
+    "fabricated_fields": [],
+    "withheld_fields": [],
+    "raw_row": {
+      "revolvingutilizationofunsecuredlines": 0.143973396,
+      "numberoftime30-59dayspastduenotworse": 0.0,
+      "numberoftimes90dayslate": 0.0,
+      "numberoftime60-89dayspastduenotworse": 0.0,
+      "numberrealestateloansorlines": 0.0,
+      "numberofdependents": 0.0,
+      "numberofopencreditlinesandloans": 8.0,
+      "age": 57.0,
+      "marital_status": 1.0,
+      "employment_type": 1.0,
+      "years_at_address": 13.0,
+      "months_employed": 116.0,
+      "monthlyincome": 6000.0,
+      "monthly_revenue": 235388.0,
+      "profit_margin": 23.0,
+      "business_age": 12.0,
+      "business_type_risk": 0.4,
+      "business_type_encoded": 3.0,
+      "debtratio": 0.13397767,
+      "medical_debt": 3127.0,
+      "current_medical_condition": 0.0,
+      "emi_payment_ratio": 0.762123973,
+      "rent_payment_regular": 1.0,
+      "utility_payment_ratio": 0.926670887,
+      "fd_amount": 302047.0,
+      "gold_value_estimate": 62301.0,
+      "property_owned": 0.0,
+      "vehicle_owned": 1.0,
+      "emergency_savings_months": 9.0,
+      "bank_account_age_months": 31.0,
+      "avg_monthly_balance": 40176.0,
+      "negative_balance_days": 8.0,
+      "overdraft_count": 0.0,
+      "salary_credit_consistency": 0.500517316,
+      "income_variability_score": 0.202426672,
+      "monthly_upi_spend": 12088.0,
+      "active_txn_days": 19.0,
+      "failed_txn_ratio": 0.151522408,
+      "late_night_txn_ratio": 0.085817263,
+      "gov_scheme_enrollment": 2.0,
+      "location_risk_index": 0.538461538,
+      "target": 1.0
+    },
+    "source": "dataset_sample"
+  },
+  "ground_truth": {
+    "tier": "low_risk",
+    "decision": "approve",
+    "default_prob": 0.231549,
+    "confidence": 0.442589,
+    "market_condition": "Economic Boom",
+    "thresholds": {
+      "low_risk": 0.2692,
+      "medium_risk": 0.4154
+    },
+    "market_summary": "Growth is strong and lenders tolerate slightly more risk."
+  },
+  "market_state": {
+    "name": "Economic Boom",
+    "base_rate": 7.9,
+    "default_risk_index": 0.92,
+    "sector_outlook": "Growth is strong and lenders tolerate slightly more risk.",
+    "threshold_delta": 0.05
+  },
+  "market_visible": true,
+  "current_policy": {
+    "max_dti": 0.596,
+    "required_fields": [
+      "payment_reliability",
+      "debt_burden_score"
+    ]
+  },
+  "conversation": [
+    {
+      "role": "system",
+      "content": "Episode 22023191-c89a-4b55-8c99-d06e389c1dbb started for task 'binary_decision' with difficulty 'easy'. Investigate the applicant within 8 steps.",
+      "step": 0
+    },
+    {
+      "role": "applicant",
+      "content": "Submitting application 4006731D with partially observed profile data. Declared quality: observed_with_noise.",
+      "step": 0
+    },
+    {
+      "role": "assistant",
+      "content": "Please provide the field 'revolving_utilization'.",
+      "step": 1
+    },
+    {
+      "role": "applicant",
+      "content": "revolving_utilization provided as 0.143973 with self-reported confidence 0.81.",
+      "step": 1
+    },
+    {
+      "role": "assistant",
+      "content": "Requesting current lending market conditions.",
+      "step": 8
+    },
+    {
+      "role": "system",
+      "content": "Market revealed: Economic Boom with base rate 7.9 and outlook 'Growth is strong and lenders tolerate slightly more risk.'.",
+      "step": 8
+    }
+  ],
+  "fraud_flags": [],
+  "requested_fields": [
+    "revolving_utilization"
+  ],
+  "revealed_fields": {
+    "account_maturity": {
+      "value": 0.495577,
+      "confidence": 0.873,
+      "source": "initial"
+    },
+    "employment_stability": {
+      "value": 0.703953,
+      "confidence": 0.927,
+      "source": "initial"
+    },
+    "income_capacity_score": {
+      "value": 0.7777,
+      "confidence": 0.819,
+      "source": "initial"
+    },
+    "location_risk_index": {
+      "value": 0.538462,
+      "confidence": 0.861,
+      "source": "initial"
+    },
+    "payment_reliability": {
+      "value": 0.721224,
+      "confidence": 0.775,
+      "source": "initial"
+    },
+    "revolving_utilization": {
+      "value": 0.143973,
+      "confidence": 0.815,
+      "source": "requested"
+    }
+  },
+  "done": true,
+  "last_episode_score": -0.96,
+  "last_info": {
+    "task_name": "binary_decision",
+    "cumulative_reward": -5.93,
+    "episode_score": -0.96,
+    "market_visible": true,
+    "fraud_flags_raised": [],
+    "explanation": "Maximum investigation steps reached before a terminal decision.",
+    "oracle_score": 0.0,
+    "penalties_applied": {
+      "market_research": 0.05,
+      "efficiency": 0.01,
+      "timeout": 1.0
+    },
+    "reward_components": {
+      "timeout": -1.0
+    }
+  },
+  "current_observation": {
+    "features": {
+      "revolving_utilization": 0.143973,
+      "delinquency_30_59": 0.0,
+      "delinquency_60_89": 0.0,
+      "delinquency_90plus": 0.0,
+      "total_delinquency_score": 0.0,
+      "debt_burden_score": 0.378228,
+      "real_estate_exposure": 0.0,
+      "medical_stress_score": 0.51415,
+      "income_capacity_score": 0.7777,
+      "net_worth_score": 0.89961,
+      "asset_ownership_score": 0.4,
+      "payment_reliability": 0.721224,
+      "transaction_health": 0.79363,
+      "overdraft_risk": 0.0,
+      "employment_stability": 0.703953,
+      "account_maturity": 0.495577,
+      "business_health_score": 0.802857,
+      "age_years": 0.633333,
+      "open_credit_lines": 0.266667,
+      "location_risk_index": 0.538462
+    },
+    "risk_score": 0.948678,
+    "shap_info": {
+      "top_features": [
+        {
+          "feature": "payment_reliability",
+          "contribution": -11.249744,
+          "impact": "reduces risk"
+        },
+        {
+          "feature": "transaction_health",
+          "contribution": -3.418414,
+          "impact": "reduces risk"
+        },
+        {
+          "feature": "location_risk_index",
+          "contribution": -2.639873,
+          "impact": "reduces risk"
+        }
+      ]
+    }
+  },
+  "trajectory": [
+    {
+      "step": 1,
+      "action_type": "request_info",
+      "params": {
+        "field": "revolving_utilization"
+      },
+      "reasoning": "",
+      "signature": "request_info:revolving_utilization",
+      "progress_made": true
+    },
+    {
+      "step": 2,
+      "action_type": "request_info",
+      "params": {
+        "field": "revolving_utilization"
+      },
+      "reasoning": "",
+      "signature": "request_info:revolving_utilization",
+      "progress_made": false
+    },
+    {
+      "step": 3,
+      "action_type": "request_info",
+      "params": {
+        "field": "revolving_utilization"
+      },
+      "reasoning": "",
+      "signature": "request_info:revolving_utilization",
+      "progress_made": false
+    },
+    {
+      "step": 4,
+      "action_type": "request_info",
+      "params": {
+        "field": "revolving_utilization"
+      },
+      "reasoning": "",
+      "signature": "request_info:revolving_utilization",
+      "progress_made": false
+    },
+    {
+      "step": 5,
+      "action_type": "request_info",
+      "params": {
+        "field": "revolving_utilization"
+      },
+      "reasoning": "",
+      "signature": "request_info:revolving_utilization",
+      "progress_made": false
+    },
+    {
+      "step": 6,
+      "action_type": "request_info",
+      "params": {
+        "field": "revolving_utilization"
+      },
+      "reasoning": "",
+      "signature": "request_info:revolving_utilization",
+      "progress_made": false
+    },
+    {
+      "step": 7,
+      "action_type": "request_info",
+      "params": {
+        "field": "revolving_utilization"
+      },
+      "reasoning": "",
+      "signature": "request_info:revolving_utilization",
+      "progress_made": false
+    },
+    {
+      "step": 8,
+      "action_type": "query_market",
+      "params": {},
+      "reasoning": "",
+      "signature": "query_market",
+      "progress_made": true
+    }
+  ]
+}

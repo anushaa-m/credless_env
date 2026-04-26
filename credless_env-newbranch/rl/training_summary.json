@@ -1,0 +1,46 @@
+{
+  "episodes": 8,
+  "algorithm": "grpo",
+  "mean_reward": 0.0987,
+  "std_reward": 0.0351,
+  "approve_rate": 0.0,
+  "decision_distribution": {
+    "APPROVE": 0,
+    "REJECT": 8
+  },
+  "history": [
+    {
+      "batch_start": 0,
+      "batch_size": 4,
+      "mean_reward": 0.0924,
+      "std_reward": 0.038,
+      "min_reward": 0.0513,
+      "max_reward": 0.145,
+      "approve_rate": 0.0,
+      "decision_distribution": {
+        "APPROVE": 0,
+        "REJECT": 4
+      },
+      "algorithm": "grpo"
+    },
+    {
+      "batch_start": 4,
+      "batch_size": 4,
+      "mean_reward": 0.105,
+      "std_reward": 0.0306,
+      "min_reward": 0.057,
+      "max_reward": 0.141,
+      "approve_rate": 0.0,
+      "decision_distribution": {
+        "APPROVE": 0,
+        "REJECT": 4
+      },
+      "algorithm": "grpo"
+    }
+  ],
+  "reward_log_path": "rl/reward_log.jsonl",
+  "artifacts": {
+    "csv": "rl/reward_curve.csv",
+    "png": "rl/reward_curve.png"
+  }
+}

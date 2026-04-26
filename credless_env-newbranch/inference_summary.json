@@ -1,0 +1,6 @@
+{
+  "mean_reward": 0.512236,
+  "approve_rate": 0.365,
+  "oracle_agreement": 0.785,
+  "episodes": 200
+}

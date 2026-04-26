@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+venv/
+.venv/
+
+# Git
+.git/
+.gitignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Model artifacts (optional if large)
+*.pkl
+!credless_model/model.pkl
+*.joblib
+
+# IDE
+.vscode/
+.idea/
+
+# Cache
+.cache/
+# .dockerignore
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.env
+*.egg-info/
+dist/
+build/
+.pytest_cache/

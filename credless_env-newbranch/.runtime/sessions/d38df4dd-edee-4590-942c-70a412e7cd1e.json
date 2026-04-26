@@ -1,0 +1,509 @@
+{
+  "session_id": "d38df4dd-edee-4590-942c-70a412e7cd1e",
+  "episode_count": 1,
+  "auditor_compliance_log": [
+    0.707
+  ],
+  "episode_id": "9ff12c24-1769-4913-ad10-2a806a073aff",
+  "task": "adaptive_inquiry",
+  "difficulty": "hard",
+  "steps_taken": 8,
+  "cumulative_reward": 0.987,
+  "applicant": {
+    "applicant_id": "92F4C371",
+    "features": {
+      "revolving_utilization": 0.645627043,
+      "delinquency_30_59": 0.0,
+      "delinquency_60_89": 0.0,
+      "delinquency_90plus": 0.0,
+      "total_delinquency_score": 0.0,
+      "debt_burden_score": 0.43613783764,
+      "real_estate_exposure": 0.1,
+      "medical_stress_score": 0.6,
+      "income_capacity_score": 0.739060085878019,
+      "net_worth_score": 0.829350372874712,
+      "asset_ownership_score": 0.4,
+      "payment_reliability": 0.8239553899300001,
+      "transaction_health": 0.8606218647667452,
+      "overdraft_risk": 0.05,
+      "employment_stability": 0.3909991816652847,
+      "account_maturity": 0.5321706239773206,
+      "business_health_score": 0.5964285714285714,
+      "age_years": 0.4666666666666667,
+      "open_credit_lines": 0.4,
+      "location_risk_index": 0.625
+    },
+    "presented_features": {
+      "revolving_utilization": 0.645627043,
+      "delinquency_30_59": 0.0,
+      "delinquency_60_89": 0.0,
+      "delinquency_90plus": 0.0,
+      "total_delinquency_score": 0.0,
+      "debt_burden_score": 0.43613783764,
+      "real_estate_exposure": 0.10715044329606245,
+      "medical_stress_score": 0.6,
+      "income_capacity_score": 0.7928144667154213,
+      "net_worth_score": 0.9621852637391515,
+      "asset_ownership_score": 0.4,
+      "payment_reliability": 0.8763815461255483,
+      "transaction_health": 0.8748157502407783,
+      "overdraft_risk": 0.05,
+      "employment_stability": 0.3909991816652847,
+      "account_maturity": 0.5321706239773206,
+      "business_health_score": 0.5964285714285714,
+      "age_years": 0.4666666666666667,
+      "open_credit_lines": 0.4,
+      "location_risk_index": 0.5847130901903261
+    },
+    "field_confidence": {
+      "revolving_utilization": 0.835,
+      "delinquency_30_59": 0.825,
+      "delinquency_60_89": 0.813,
+      "delinquency_90plus": 0.793,
+      "total_delinquency_score": 0.595,
+      "debt_burden_score": 0.895,
+      "real_estate_exposure": 0.794,
+      "medical_stress_score": 0.518,
+      "income_capacity_score": 0.631,
+      "net_worth_score": 0.53,
+      "asset_ownership_score": 0.821,
+      "payment_reliability": 0.56,
+      "transaction_health": 0.901,
+      "overdraft_risk": 0.517,
+      "employment_stability": 0.891,
+      "account_maturity": 0.884,
+      "business_health_score": 0.98,
+      "age_years": 0.859,
+      "open_credit_lines": 0.978,
+      "location_risk_index": 0.793
+    },
+    "uncertainty_flags": {
+      "revolving_utilization": 0.165,
+      "delinquency_30_59": 0.175,
+      "delinquency_60_89": 0.187,
+      "delinquency_90plus": 0.207,
+      "total_delinquency_score": 0.405,
+      "debt_burden_score": 0.105,
+      "real_estate_exposure": 0.206,
+      "medical_stress_score": 0.482,
+      "income_capacity_score": 0.369,
+      "net_worth_score": 0.47,
+      "asset_ownership_score": 0.179,
+      "payment_reliability": 0.44,
+      "transaction_health": 0.099,
+      "overdraft_risk": 0.483,
+      "employment_stability": 0.109,
+      "account_maturity": 0.116,
+      "business_health_score": 0.02,
+      "age_years": 0.141,
+      "open_credit_lines": 0.022,
+      "location_risk_index": 0.207
+    },
+    "hidden_fields": [
+      "asset_ownership_score",
+      "debt_burden_score",
+      "employment_stability",
+      "income_capacity_score",
+      "medical_stress_score",
+      "net_worth_score",
+      "overdraft_risk",
+      "total_delinquency_score"
+    ],
+    "visible_fields": [
+      "account_maturity",
+      "location_risk_index",
+      "payment_reliability",
+      "transaction_health"
+    ],
+    "data_quality": "adversarial",
+    "applicant_behavior": "adversarial",
+    "is_adversarial": true,
+    "fabricated_fields": [
+      "income_capacity_score",
+      "net_worth_score",
+      "payment_reliability"
+    ],
+    "withheld_fields": [
+      "medical_stress_score",
+      "overdraft_risk",
+      "total_delinquency_score"
+    ],
+    "raw_row": {
+      "revolvingutilizationofunsecuredlines": 0.645627043,
+      "numberoftime30-59dayspastduenotworse": 0.0,
+      "numberoftimes90dayslate": 0.0,
+      "numberoftime60-89dayspastduenotworse": 0.0,
+      "numberrealestateloansorlines": 1.0,
+      "numberofdependents": 0.0,
+      "numberofopencreditlinesandloans": 12.0,
+      "age": 42.0,
+      "marital_status": 1.0,
+      "employment_type": 0.0,
+      "years_at_address": 0.0,
+      "months_employed": 148.0,
+      "monthlyincome": 8195.0,
+      "monthly_revenue": 173052.0,
+      "profit_margin": 20.0,
+      "business_age": 6.0,
+      "business_type_risk": 0.5,
+      "business_type_encoded": 0.0,
+      "debtratio": 0.320766227,
+      "medical_debt": 8321.625,
+      "current_medical_condition": 0.0,
+      "emi_payment_ratio": 0.814736807,
+      "rent_payment_regular": 1.0,
+      "utility_payment_ratio": 0.911239235,
+      "fd_amount": 87154.0,
+      "gold_value_estimate": 184230.0,
+      "property_owned": 0.0,
+      "vehicle_owned": 1.0,
+      "emergency_savings_months": 7.0,
+      "bank_account_age_months": 66.0,
+      "avg_monthly_balance": 43708.0,
+      "negative_balance_days": 0.0,
+      "overdraft_count": 1.0,
+      "salary_credit_consistency": 0.523291829,
+      "income_variability_score": 0.494341116,
+      "monthly_upi_spend": 9926.0,
+      "active_txn_days": 27.0,
+      "failed_txn_ratio": 0.066290131,
+      "late_night_txn_ratio": 0.293058193,
+      "gov_scheme_enrollment": 3.0,
+      "location_risk_index": 0.625,
+      "target": 1.0
+    },
+    "source": "dataset_sample"
+  },
+  "ground_truth": {
+    "tier": "medium_risk",
+    "decision": "approve",
+    "default_prob": 0.24621,
+    "confidence": 0.265921,
+    "market_condition": "High Inflation",
+    "thresholds": {
+      "low_risk": 0.1892,
+      "medium_risk": 0.3354
+    },
+    "market_summary": "Household cash flow is strained and missed payments rise."
+  },
+  "market_state": {
+    "name": "High Inflation",
+    "base_rate": 11.1,
+    "default_risk_index": 1.08,
+    "sector_outlook": "Household cash flow is strained and missed payments rise.",
+    "threshold_delta": -0.03
+  },
+  "market_visible": true,
+  "current_policy": {
+    "max_dti": 0.48,
+    "required_fields": [
+      "payment_reliability",
+      "debt_burden_score",
+      "overdraft_risk",
+      "total_delinquency_score"
+    ]
+  },
+  "conversation": [
+    {
+      "role": "system",
+      "content": "Episode 9ff12c24-1769-4913-ad10-2a806a073aff started for task 'adaptive_inquiry' with difficulty 'hard'. Investigate the applicant within 8 steps.",
+      "step": 0
+    },
+    {
+      "role": "applicant",
+      "content": "Submitting application 92F4C371 with partially observed profile data. Declared quality: adversarial.",
+      "step": 0
+    },
+    {
+      "role": "assistant",
+      "content": "Please provide the field 'debt_burden_score'.",
+      "step": 1
+    },
+    {
+      "role": "applicant",
+      "content": "debt_burden_score provided as 0.436138 with self-reported confidence 0.90.",
+      "step": 1
+    },
+    {
+      "role": "assistant",
+      "content": "Please provide the field 'overdraft_risk'.",
+      "step": 2
+    },
+    {
+      "role": "applicant",
+      "content": "overdraft_risk provided as 0.050000 with self-reported confidence 0.52.",
+      "step": 2
+    },
+    {
+      "role": "assistant",
+      "content": "Please provide the field 'total_delinquency_score'.",
+      "step": 3
+    },
+    {
+      "role": "applicant",
+      "content": "total_delinquency_score provided as 0.000000 with self-reported confidence 0.59.",
+      "step": 3
+    },
+    {
+      "role": "assistant",
+      "content": "Please provide the field 'medical_stress_score'.",
+      "step": 4
+    },
+    {
+      "role": "applicant",
+      "content": "medical_stress_score provided as 0.600000 with self-reported confidence 0.52.",
+      "step": 4
+    },
+    {
+      "role": "assistant",
+      "content": "Please provide the field 'income_capacity_score'.",
+      "step": 5
+    },
+    {
+      "role": "applicant",
+      "content": "income_capacity_score provided as 0.792814 with self-reported confidence 0.63.",
+      "step": 5
+    },
+    {
+      "role": "assistant",
+      "content": "Please provide the field 'employment_stability'.",
+      "step": 6
+    },
+    {
+      "role": "applicant",
+      "content": "employment_stability provided as 0.390999 with self-reported confidence 0.89.",
+      "step": 6
+    },
+    {
+      "role": "assistant",
+      "content": "Requesting current lending market conditions.",
+      "step": 7
+    },
+    {
+      "role": "system",
+      "content": "Market revealed: High Inflation with base rate 11.1 and outlook 'Household cash flow is strained and missed payments rise.'.",
+      "step": 7
+    },
+    {
+      "role": "assistant",
+      "content": "Final action: approve. Reasoning: Decision based on oracle_risk=0.367, oracle_confidence=0.633, and revealed repayment signals.",
+      "step": 8
+    },
+    {
+      "role": "system",
+      "content": "Episode resolved with oracle_decision=approve and oracle_score=0.7538.",
+      "step": 8
+    }
+  ],
+  "fraud_flags": [],
+  "requested_fields": [
+    "debt_burden_score",
+    "overdraft_risk",
+    "total_delinquency_score",
+    "medical_stress_score",
+    "income_capacity_score",
+    "employment_stability"
+  ],
+  "revealed_fields": {
+    "account_maturity": {
+      "value": 0.532171,
+      "confidence": 0.884,
+      "source": "initial"
+    },
+    "location_risk_index": {
+      "value": 0.584713,
+      "confidence": 0.793,
+      "source": "initial"
+    },
+    "payment_reliability": {
+      "value": 0.876382,
+      "confidence": 0.56,
+      "source": "initial"
+    },
+    "transaction_health": {
+      "value": 0.874816,
+      "confidence": 0.901,
+      "source": "initial"
+    },
+    "debt_burden_score": {
+      "value": 0.436138,
+      "confidence": 0.895,
+      "source": "requested"
+    },
+    "overdraft_risk": {
+      "value": 0.05,
+      "confidence": 0.517,
+      "source": "requested"
+    },
+    "total_delinquency_score": {
+      "value": 0.0,
+      "confidence": 0.595,
+      "source": "requested"
+    },
+    "medical_stress_score": {
+      "value": 0.6,
+      "confidence": 0.518,
+      "source": "requested"
+    },
+    "income_capacity_score": {
+      "value": 0.792814,
+      "confidence": 0.631,
+      "source": "requested"
+    },
+    "employment_stability": {
+      "value": 0.390999,
+      "confidence": 0.891,
+      "source": "requested"
+    }
+  },
+  "done": true,
+  "last_episode_score": 0.707,
+  "last_info": {
+    "task_name": "adaptive_inquiry",
+    "cumulative_reward": 0.987,
+    "episode_score": 0.707,
+    "market_visible": true,
+    "fraud_flags_raised": [],
+    "explanation": "Decision=approve tier=medium_risk with default_risk=0.2462. Dominant factor: payment_reliability (supports approval).",
+    "oracle_score": 0.7538,
+    "penalties_applied": {
+      "efficiency": 0.24,
+      "auditor_score": 0.8486,
+      "task_score": 1.0,
+      "oracle_alignment": 1.0,
+      "reasoning_score": 0.5675,
+      "bias_penalty": 0.0
+    },
+    "oracle_decision": "APPROVE",
+    "oracle_confidence": 0.2659,
+    "reward_components": {
+      "task_score": 1.0,
+      "auditor_score": 0.8486,
+      "efficiency": -0.24,
+      "oracle_alignment": 1.0,
+      "reasoning_score": 0.5675
+    }
+  },
+  "current_observation": {
+    "features": {
+      "revolving_utilization": 0.645627,
+      "delinquency_30_59": 0.0,
+      "delinquency_60_89": 0.0,
+      "delinquency_90plus": 0.0,
+      "total_delinquency_score": 0.0,
+      "debt_burden_score": 0.436138,
+      "real_estate_exposure": 0.10715,
+      "medical_stress_score": 0.6,
+      "income_capacity_score": 0.792814,
+      "net_worth_score": 0.962185,
+      "asset_ownership_score": 0.4,
+      "payment_reliability": 0.876382,
+      "transaction_health": 0.874816,
+      "overdraft_risk": 0.05,
+      "employment_stability": 0.390999,
+      "account_maturity": 0.532171,
+      "business_health_score": 0.596429,
+      "age_years": 0.466667,
+      "open_credit_lines": 0.4,
+      "location_risk_index": 0.584713
+    },
+    "risk_score": 0.936445,
+    "shap_info": {
+      "top_features": [
+        {
+          "feature": "payment_reliability",
+          "contribution": -11.249744,
+          "impact": "reduces risk"
+        },
+        {
+          "feature": "transaction_health",
+          "contribution": -3.418414,
+          "impact": "reduces risk"
+        },
+        {
+          "feature": "location_risk_index",
+          "contribution": -2.866624,
+          "impact": "reduces risk"
+        }
+      ]
+    }
+  },
+  "trajectory": [
+    {
+      "step": 1,
+      "action_type": "request_info",
+      "params": {
+        "field": "debt_burden_score"
+      },
+      "reasoning": "",
+      "signature": "request_info:debt_burden_score",
+      "progress_made": true
+    },
+    {
+      "step": 2,
+      "action_type": "request_info",
+      "params": {
+        "field": "overdraft_risk"
+      },
+      "reasoning": "",
+      "signature": "request_info:overdraft_risk",
+      "progress_made": true
+    },
+    {
+      "step": 3,
+      "action_type": "request_info",
+      "params": {
+        "field": "total_delinquency_score"
+      },
+      "reasoning": "",
+      "signature": "request_info:total_delinquency_score",
+      "progress_made": true
+    },
+    {
+      "step": 4,
+      "action_type": "request_info",
+      "params": {
+        "field": "medical_stress_score"
+      },
+      "reasoning": "",
+      "signature": "request_info:medical_stress_score",
+      "progress_made": true
+    },
+    {
+      "step": 5,
+      "action_type": "request_info",
+      "params": {
+        "field": "income_capacity_score"
+      },
+      "reasoning": "",
+      "signature": "request_info:income_capacity_score",
+      "progress_made": true
+    },
+    {
+      "step": 6,
+      "action_type": "request_info",
+      "params": {
+        "field": "employment_stability"
+      },
+      "reasoning": "",
+      "signature": "request_info:employment_stability",
+      "progress_made": true
+    },
+    {
+      "step": 7,
+      "action_type": "query_market",
+      "params": {},
+      "reasoning": "",
+      "signature": "query_market",
+      "progress_made": true
+    },
+    {
+      "step": 8,
+      "action_type": "approve",
+      "params": {},
+      "reasoning": "Decision based on oracle_risk=0.367, oracle_confidence=0.633, and revealed repayment signals.",
+      "signature": "approve",
+      "progress_made": true
+    }
+  ]
+}

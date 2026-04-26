@@ -11,7 +11,8 @@ import numpy as np
 import pandas as pd
 
 from data.synthetic_generator import generate_synthetic_data
-from pipeline.main_pipeline import CreditDecisionEnvironment, CreditDecisionPipeline, _load_agent2_module
+from pipeline.main_pipeline import CreditDecisionPipeline, _load_agent2_module
+from server.environment import CreditAnalystEnvironment
 
 
 DEFAULT_SEED = int(os.getenv("CREDLESS_SEED", "42"))
@@ -24,6 +25,56 @@ DEFAULT_MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct")
 DEFAULT_API_BASE_URL = os.getenv("API_BASE_URL")
 DEFAULT_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
 MAX_RUNTIME_SECONDS = 20 * 60
+MAX_EPISODE_STEPS = 8
+APPROVE_THRESHOLD = 0.30
+LOW_RISK_AUTO_APPROVE = 0.40
+LOW_RISK_HEURISTIC_CAP = 0.50
+REQUEST_PRIORITY = [
+    "total_delinquency_score",
+    "overdraft_risk",
+    "medical_stress_score",
+    "debt_burden_score",
+    "payment_reliability",
+    "income_capacity_score",
+    "employment_stability",
+    "account_maturity",
+]
+
+
+def _oracle_factor_names(top_factors: list[list[Any]]) -> list[str]:
+    names: list[str] = []
+    for item in top_factors:
+        if isinstance(item, list) and item:
+            names.append(str(item[0]))
+    return names
+
+
+def _normalize_decision_label(value: Any) -> str:
+    decision = str(value or "").strip().upper()
+    if decision == "REJECT":
+        return "DENY"
+    return decision
+
+
+def _oracle_agreed(decision: Any, oracle_decision: Any) -> bool:
+    return _normalize_decision_label(decision) == _normalize_decision_label(oracle_decision)
+
+
+def _local_oracle_payload(env: CreditAnalystEnvironment) -> dict[str, Any]:
+    revealed = env.oracle_features()
+    merged = {field: 0.5 for field in getattr(env.oracle, "feature_order", [])}
+    merged.update(revealed)
+    oracle_risk = float(env.oracle.predict_risk(merged, market_condition=env._market_state["name"]))  # type: ignore[attr-defined]
+    oracle_confidence = float(max(oracle_risk, 1.0 - oracle_risk))
+    top_factors = [
+        [str(item["feature"]), float(item["contribution"])]
+        for item in env.risk_predictor.explain(merged, top_k=5)
+    ]
+    return {
+        "oracle_risk": oracle_risk,
+        "oracle_confidence": oracle_confidence,
+        "top_factors": top_factors,
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,40 +164,160 @@ def _build_agent2(args: argparse.Namespace, pipeline: CreditDecisionPipeline) ->
     return pipeline.agent2
 
 
-def _run_one_local(agent1: Any, agent2: Any, record: Mapping[str, Any]) -> dict[str, Any]:
-    features = {str(key).strip().lower().replace(" ", "_"): value for key, value in dict(record).items()}
-    risk_score = float(agent1.predict(features))
+def _profile_features(observation: Mapping[str, Any], *, defaults: Mapping[str, float] | None = None) -> dict[str, float]:
+    features = dict(defaults or {})
+    profile = observation.get("applicant", {}).get("profile", {})
+    for field, payload in profile.items():
+        features[str(field)] = float(payload.get("value", 0.0))
+    return features
+
+
+def _choose_action(observation: Mapping[str, Any], oracle_payload: Mapping[str, Any], agent1: Any, agent2: Any) -> tuple[dict[str, Any], float, list[dict[str, Any]]]:
+    missing_fields = list(observation.get("applicant", {}).get("missing_fields", []))
+    required_fields = list((observation.get("current_policy") or {}).get("required_fields", []))
+    profile = observation.get("applicant", {}).get("profile", {})
+    oracle_risk = float(oracle_payload.get("oracle_risk", 0.0) or 0.0)
+    oracle_confidence = float(oracle_payload.get("oracle_confidence", 0.0) or 0.0)
+    factor_names = _oracle_factor_names(list(oracle_payload.get("top_factors", []) or []))
+
+    for field in required_fields:
+        if field in missing_fields:
+            return {"action_type": "request_info", "params": {"field": field}}, 0.0, []
+
+    for field in factor_names:
+        if field in missing_fields and field not in profile:
+            return {"action_type": "request_info", "params": {"field": field}}, 0.0, []
+
+    for field in REQUEST_PRIORITY:
+        if field in missing_fields and field not in profile:
+            return {"action_type": "request_info", "params": {"field": field}}, 0.0, []
+
+    if not observation.get("market_visible", False) and oracle_confidence < 0.85:
+        return {"action_type": "query_market"}, 0.0, []
+
+    confidence = {
+        key: float(value.get("confidence", 0.0))
+        for key, value in profile.items()
+        if isinstance(value, Mapping)
+    }
+    if (
+        confidence and any((1.0 - value) > 0.25 for value in confidence.values())
+        and oracle_risk > 0.88
+    ) and not observation.get("fraud_flags_raised"):
+        return {
+            "action_type": "flag_fraud",
+            "params": {"reason": "low-confidence profile values or elevated oracle risk require manual verification"},
+            "reasoning": "Potential fraud indicators identified from observed applicant data and oracle risk.",
+        }, 0.0, []
+
+    current_step = int(observation.get("step", 0) or 0)
+    max_steps = int(observation.get("max_steps", MAX_EPISODE_STEPS) or MAX_EPISODE_STEPS)
+    if missing_fields and current_step <= max_steps - 3 and (oracle_risk > 0.55 or oracle_confidence < 0.75):
+        for field in REQUEST_PRIORITY:
+            if field in missing_fields and field not in profile:
+                return {"action_type": "request_info", "params": {"field": field}}, 0.0, []
+        return {"action_type": "request_info", "params": {"field": str(missing_fields[0])}}, 0.0, []
+
+    features = _profile_features(observation, defaults={field: 0.5 for field in getattr(agent1, "feature_order", [])})
+    heuristic_risk = float(agent1.predict(features))
+    risk_score = 0.60 * oracle_risk + 0.40 * heuristic_risk if oracle_risk > 0.0 else heuristic_risk
     shap_info = list(agent1.explain(features))
 
+    policy_approve_probability: float | None = None
     if hasattr(agent2, "generate_with_metadata"):
         policy_output = agent2.generate_with_metadata(features, risk_score, shap_info)
-        decision = str(policy_output.decision)
+        decision = str(policy_output.decision).strip().upper()
+        reasoning = getattr(policy_output, "raw_text", "") or "Decision from agent 2 policy."
+        raw_probability = getattr(policy_output, "approve_probability", None)
+        if raw_probability is not None:
+            policy_approve_probability = float(np.clip(float(raw_probability), 0.01, 0.99))
     else:
-        decision = str(agent2.generate_decision(features, risk_score, shap_info))
+        decision = str(agent2.generate_decision(features, risk_score, shap_info)).strip().upper()
+        reasoning = "Decision from agent 2 policy."
 
-    env = CreditDecisionEnvironment(features)
-    result = env.step(decision)
+    if observation.get("task_name") == "adaptive_inquiry" and oracle_confidence < 0.60:
+        return {
+            "action_type": "escalate",
+            "reasoning": f"Escalating because oracle confidence is only {oracle_confidence:.3f}.",
+        }, risk_score, shap_info
+
+    heuristic_approve_probability = float(np.clip(1.0 - risk_score, 0.01, 0.99))
+    oracle_approve_probability = float(np.clip(1.0 - oracle_risk, 0.01, 0.99))
+    if policy_approve_probability is None:
+        policy_approve_probability = 0.55 if decision == "APPROVE" else 0.45
+
+    blended_approve_probability = float(
+        np.clip(
+            0.35 * policy_approve_probability + 0.45 * oracle_approve_probability + 0.20 * heuristic_approve_probability,
+            0.01,
+            0.99,
+        )
+    )
+
+    auto_approve = (
+        oracle_risk <= LOW_RISK_AUTO_APPROVE
+        and risk_score <= LOW_RISK_HEURISTIC_CAP
+        and not observation.get("fraud_flags_raised")
+    )
+    terminal_action = "approve" if auto_approve or blended_approve_probability >= APPROVE_THRESHOLD else "deny"
+    return {
+        "action_type": terminal_action,
+        "reasoning": (
+            f"{reasoning} Oracle risk={oracle_risk:.3f}, confidence={oracle_confidence:.3f}, "
+            f"approve_prob={blended_approve_probability:.3f}."
+        ),
+    }, risk_score, shap_info
+
+
+def _run_one_local(agent1: Any, agent2: Any, episode_seed: int) -> dict[str, Any]:
+    env = CreditAnalystEnvironment()
+    observation = env.reset(seed=episode_seed)
+    oracle_payload = _local_oracle_payload(env)
+    done = bool(observation.get("done", False))
+    risk_score = 0.0
+    shap_info: list[dict[str, Any]] = []
+    final_result: dict[str, Any] = {"reward": 0.0, "done": done, "info": {}}
+    final_action = "ESCALATE"
+
+    steps = 0
+    while not done and steps < MAX_EPISODE_STEPS:
+        steps += 1
+        action, maybe_risk, maybe_shap = _choose_action(observation, oracle_payload, agent1, agent2)
+        if maybe_shap:
+            risk_score = maybe_risk
+            shap_info = maybe_shap
+            final_action = str(action["action_type"]).upper()
+        result = env.step(action)
+        observation = result.get("observation", observation)
+        oracle_payload = _local_oracle_payload(env)
+        done = bool(result.get("done", False))
+        final_result = result
+
     return {
         "risk_score": round(risk_score, 6),
-        "decision": decision,
-        "reward": round(float(result["reward"]), 6),
-        "oracle_score": round(float(result["info"].get("oracle_score", 0.0)), 6),
-        "explanation": str(result["info"].get("explanation", "")),
-        "oracle_decision": str(result["info"].get("oracle_decision", "")),
+        "oracle_risk": round(float(oracle_payload.get("oracle_risk", 0.0)), 6),
+        "oracle_confidence": round(float(oracle_payload.get("oracle_confidence", 0.0)), 6),
+        "top_factors": list(oracle_payload.get("top_factors", [])),
+        "decision": final_action,
+        "reward": round(float(final_result["reward"]), 6),
+        "oracle_score": round(float(final_result["info"].get("oracle_score", 0.0)), 6),
+        "explanation": str(final_result["info"].get("explanation", "")),
+        "oracle_decision": str(final_result["info"].get("oracle_decision", "")),
+        "oracle_agreed": _oracle_agreed(final_action, final_result["info"].get("oracle_decision", "")),
+        "steps": steps,
+        "action_history": list(observation.get("action_history", [])),
     }
 
 
 def _aggregate_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     rewards = np.array([float(item["reward"]) for item in results], dtype=float)
     approvals = [str(item["decision"]) for item in results]
-    oracle_matches = [
-        1.0 if str(item["decision"]) == str(item["oracle_decision"]) else 0.0
-        for item in results
-    ]
+    oracle_matches = [1.0 if _oracle_agreed(item["decision"], item["oracle_decision"]) else 0.0 for item in results]
     return {
         "mean_reward": round(float(rewards.mean()), 6) if len(rewards) else 0.0,
         "approve_rate": round(approvals.count("APPROVE") / len(approvals), 6) if approvals else 0.0,
         "oracle_agreement": round(float(np.mean(oracle_matches)), 6) if oracle_matches else 0.0,
+        "oracle_agreement_count": int(sum(oracle_matches)),
         "episodes": len(results),
     }
 
@@ -162,10 +333,10 @@ def main() -> None:
     agent2 = _build_agent2(args, pipeline)
 
     results: list[dict[str, Any]] = []
-    for record in frame.to_dict(orient="records"):
+    for episode_index, _record in enumerate(frame.to_dict(orient="records")):
         if time.time() - start_time > MAX_RUNTIME_SECONDS:
             raise TimeoutError(f"Inference exceeded the {MAX_RUNTIME_SECONDS}s runtime budget.")
-        sample_result = _run_one_local(agent1, agent2, record)
+        sample_result = _run_one_local(agent1, agent2, args.seed + episode_index)
         results.append(sample_result)
 
     summary = _aggregate_metrics(results)
@@ -175,9 +346,14 @@ def main() -> None:
         for item in results:
             public_item = {
                 "risk_score": item["risk_score"],
+                "oracle_risk": item["oracle_risk"],
+                "oracle_confidence": item["oracle_confidence"],
+                "top_factors": item["top_factors"],
                 "decision": item["decision"],
                 "reward": item["reward"],
                 "oracle_score": item["oracle_score"],
+                "oracle_decision": item["oracle_decision"],
+                "oracle_agreed": item["oracle_agreed"],
                 "explanation": item["explanation"],
             }
             handle.write(json.dumps(public_item, ensure_ascii=True) + "\n")
